@@ -1,6 +1,7 @@
 {
-  "name": "WHITE.7 Buying (demo)",
-  "short_name": "W7 Buying",
+  "id": "white7-buying-demo-v2",
+  "name": "WHITE.7 Buying (demo 2)",
+  "short_name": "W7 Buying 2",
   "description": "Demo offline del software di buying per l'abbigliamento",
   "lang": "it",
   "start_url": "./",

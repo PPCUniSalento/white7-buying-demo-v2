@@ -24,7 +24,8 @@ const ROTTE = {
   report: { comp: Report, ruoli: ['buyer', 'amministrazione'] },
   arrivi: { comp: Arrivi, ruoli: RICEVONO },
   pacchetto: { comp: Pacchetto, ruoli: RICEVONO, par: ['msgId'] },
-  ricezione: { comp: Ricezione, ruoli: ['logistica', 'puntovendita'], par: ['msgId'] },
+  // ogni negozio riceve direttamente la merce (15/10/2026): la logistica consulta soltanto
+  ricezione: { comp: Ricezione, ruoli: ['puntovendita'], par: ['msgId'] },
   distinte: { comp: Distinte, ruoli: RICEVONO },
   distinta: { comp: Distinta, ruoli: TUTTI, par: ['id'] },
   altro: { comp: Altro, ruoli: TUTTI },
@@ -98,7 +99,7 @@ const App = {
   },
   template: `<div class="app" :data-ruolo="state.ruolo">
     <header class="topbar" v-if="state.haDati">
-      <div class="brand"><b>WHITE.7</b> Buying <span>demo</span></div>
+      <div class="brand"><b>WHITE.7</b> Buying <span>demo 2</span></div>
       <nav class="ruoli" aria-label="Ruolo">
         <button v-for="(r, k) in RUOLI" :key="k" :class="{on: state.ruolo === k}" :style="{'--c': r.colore}" @click="setRuolo(k)">
           {{ r.breve }}<i v-if="nl(k)" class="badge">{{ nl(k) }}</i></button>

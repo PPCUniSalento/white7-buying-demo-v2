@@ -1,6 +1,6 @@
 // Primo avvio, impostazioni, anagrafiche, registro modifiche.
 
-import { M, state, db, importaSeed, ripristina, salvaImpostazioni, stagioni, spazioOccupato } from './db.js';
+import { M, state, db, importaSeed, ripristina, salvaImpostazioni, stagioni, spazioOccupato, seedVersionePrecedente } from './db.js';
 import { RUOLI, GENERI, num, dataOra, stagioneNome, stagioneOrd, stagioneSucc } from './util.js';
 import { toast } from './comp.js';
 
@@ -21,6 +21,21 @@ export const Setup = {
   setup() {
     const inp = ref(null), lavoro = ref(false), errore = ref('');
     const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    // archivio già caricato nella versione precedente, sullo stesso dispositivo e browser
+    const v1 = ref(null);
+    onMounted(async () => { v1.value = await seedVersionePrecedente(); });
+    async function daV1() {
+      lavoro.value = true;
+      errore.value = '';
+      try {
+        await importaSeed(await v1.value.arrayBuffer());
+        await chiediPersistenza();
+        toast('Archivio caricato');
+        location.hash = '#/';
+      } catch (e) {
+        errore.value = e.message || String(e);
+      } finally { lavoro.value = false; }
+    }
     async function scelto(ev) {
       const f = ev.target.files?.[0];
       ev.target.value = '';
@@ -35,17 +50,20 @@ export const Setup = {
         errore.value = e.message || String(e);
       } finally { lavoro.value = false; }
     }
-    return { inp, lavoro, errore, scelto, ios };
+    return { inp, lavoro, errore, scelto, ios, v1, daV1 };
   },
   template: `<div class="pagina setup">
     <div class="setup-logo">W7</div>
     <h1>WHITE.7 Buying</h1>
-    <p class="muted">Demo offline del nuovo software di buying.</p>
+    <p class="muted">Demo offline del nuovo software di buying · versione 2</p>
     <section class="card">
       <h2>1. Carica l'archivio dati</h2>
       <p>Seleziona il file <b class="mono">seed_white7.json.gz</b> (dalla cartella OneDrive del progetto, da File o da AirDrop).
         I dati restano solo su questo dispositivo: l'app non li invia a nessun server.</p>
-      <button class="btn primario pieno grande" :disabled="lavoro" @click="inp.click()">
+      <button v-if="v1" class="btn primario pieno grande" :disabled="lavoro" @click="daV1">
+        <ic n="copy"/> Usa l'archivio già caricato</button>
+      <p v-if="v1" class="muted">Su questo dispositivo è già caricato l'archivio della prima versione della demo: si può riusare senza cercare il file.</p>
+      <button class="btn pieno grande" :class="{primario: !v1}" :disabled="lavoro" @click="inp.click()">
         <span v-if="lavoro" class="spin"></span><ic v-else n="download"/> {{ lavoro ? 'Importazione in corso…' : 'Carica archivio' }}</button>
       <input ref="inp" type="file" hidden @change="scelto">
       <p v-if="errore" class="err">{{ errore }}</p>
@@ -99,7 +117,7 @@ export const Altro = {
       <div class="form">
         <label>Stagione di lavoro<select class="inp" v-model="state.imp.stagioneLavoro" @change="salva">
           <option v-for="s in elencoStagioni" :value="s">{{ stagioneNome(s) }}</option></select></label>
-        <label>Foto minime per articolo<input class="inp" type="number" min="0" max="10" v-model.number="state.imp.minFoto" @change="salva"></label>
+        <label>Foto minime per articolo (0 = facoltative)<input class="inp" type="number" min="0" max="10" v-model.number="state.imp.minFoto" @change="salva"></label>
         <label>Genere predefinito<select class="inp" v-model="state.imp.genereDefault" @change="salva">
           <option v-for="(g, k) in GENERI" :value="k">{{ g }}</option></select></label>
         <label>Società predefinita<select class="inp" v-model.number="state.imp.aziendaDefault" @change="salva">
@@ -134,7 +152,7 @@ export const Altro = {
       </div>
       <input ref="inp" type="file" hidden @change="altroArchivio">
     </section>
-    <p class="muted centro">WHITE.7 Buying · demo offline · i dati restano su questo dispositivo</p>
+    <p class="muted centro">WHITE.7 Buying · demo offline, versione 2 · i dati restano su questo dispositivo</p>
   </div>`,
 };
 
@@ -170,7 +188,7 @@ export const Anagrafica = {
     <template v-if="tipo === 'fornitori'">
       <input class="inp" v-model="q" type="search" placeholder="Cerca fornitore">
       <ul class="lista"><li v-for="f in fornitori.slice(0, limite)" :key="f.id"><div class="grow"><b>{{ f.nome }}</b><small>codice {{ f.cod }}</small></div>
-        <small v-if="nOrdini.get(f.id)">{{ nOrdini.get(f.id) }} ordini</small></li></ul>
+        <small v-if="nOrdini.get(f.id)">{{ nOrdini.get(f.id) }} ordin{{ nOrdini.get(f.id) === 1 ? 'e' : 'i' }}</small></li></ul>
       <button v-if="fornitori.length > limite" class="btn pieno" @click="limite += 200">Altri ({{ fornitori.length - limite }})</button>
     </template>
     <template v-else-if="tipo === 'categorie'">

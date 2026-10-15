@@ -1,12 +1,11 @@
 // Dati: IndexedDB (Dexie) come archivio, copia in memoria (M) per ricerche e report.
 // Tutte le scritture passano da qui: aggiornano IndexedDB, M e state.rev.
 
-import { RUOLI, stagioneKey, stagioneOrd, stagioneSucc, consegnaStagione, oraIso, controllaCodice, totaleRiga } from './util.js';
+import { APP, RUOLI, SENZA_TAGLIA, stagioneKey, stagioneOrd, stagioneSucc, consegnaStagione, oraIso, controllaCodice, totaleRiga } from './util.js';
 
 const { reactive } = Vue;
 
-export const db = new Dexie('white7-buying');
-db.version(1).stores({
+const SCHEMA_V1 = {
   anag: 'k',
   ordini: '++id, stato',
   righe: '++id, ordineId',
@@ -15,9 +14,13 @@ db.version(1).stores({
   distinte: '++id, ordineId',
   log: '++id',
   meta: 'k',
-});
+};
 
-const IMP_DEFAULT = { stagioneLavoro: null, minFoto: 3, genereDefault: 'U', aziendaDefault: 5 };
+export const db = new Dexie(APP.db);
+db.version(1).stores({ ...SCHEMA_V1, budget: 'k' });
+
+// Foto facoltative (decisione del 15/10/2026): il minimo è un'impostazione, 0 di default
+const IMP_DEFAULT = { stagioneLavoro: null, minFoto: 0, genereDefault: 'U', aziendaDefault: 5 };
 
 export const state = reactive({
   pronto: false,
@@ -29,10 +32,10 @@ export const state = reactive({
 });
 
 function leggiLocale(k) {
-  try { return localStorage.getItem('w7.' + k); } catch { return null; }
+  try { return localStorage.getItem(APP.locale + k); } catch { return null; }
 }
 export function scriviLocale(k, v) {
-  try { localStorage.setItem('w7.' + k, v); } catch { /* storage non disponibile */ }
+  try { localStorage.setItem(APP.locale + k, v); } catch { /* storage non disponibile */ }
 }
 
 // Modello in memoria (non reattivo: la reattività passa da state.rev)
@@ -41,7 +44,7 @@ export const M = {
   az: new Map(), forn: new Map(), mac: new Map(), cat: new Map(), col: new Map(), gri: new Map(),
   ord: new Map(), rig: new Map(), righePerOrdine: new Map(),
   foto: new Map(), fotoPerRiga: new Map(),
-  messaggi: new Map(), distinte: new Map(), log: [],
+  messaggi: new Map(), distinte: new Map(), log: [], budget: new Map(),
 };
 
 const tocca = () => { state.rev++; };
@@ -84,6 +87,7 @@ export async function carica() {
   M.messaggi = new Map((await db.messaggi.toArray()).map((m) => [m.id, m]));
   M.distinte = new Map((await db.distinte.toArray()).map((d) => [d.id, d]));
   M.log = await db.log.toArray();
+  M.budget = new Map((await db.budget.toArray()).map((b) => [b.k, b.v]));
   const imp = await db.meta.get('impostazioni');
   state.imp = { ...IMP_DEFAULT, ...(imp ? imp.v : {}) };
   if (!state.imp.stagioneLavoro) state.imp.stagioneLavoro = stagioni()[0] || null;
@@ -132,6 +136,20 @@ export async function importaSeed(buf) {
   }
   await logga('Importazione archivio dati', 'archivio', null, `${M.ord.size} ordini, ${M.rig.size} righe`);
   tocca();
+}
+
+// Archivio già caricato nella v1 sullo stesso dispositivo e browser (stesso dominio):
+// si legge solo il file originale, senza modificare il database della v1.
+export async function seedVersionePrecedente() {
+  try {
+    if (!(await Dexie.exists(APP.db1))) return null;
+    const v1 = new Dexie(APP.db1);
+    v1.version(1).stores(SCHEMA_V1);
+    await v1.open();
+    const rec = await v1.meta.get('seed');
+    v1.close();
+    return rec ? rec.v : null;
+  } catch { return null; }
 }
 
 export async function ripristina() {
@@ -187,13 +205,67 @@ export function riepilogo(righe, scontoExtra = 0) {
   return { pezzi, valore, scontato: valore * (1 - (scontoExtra || 0) / 100), macro };
 }
 
-// Quantità già ricevuta per riga, sommando tutte le distinte dell'ordine
-export function ricevutoPerRiga(ordineId) {
+// ---------- ricezione per taglia ----------
+// Quantità ordinate per taglia; gli articoli senza griglia hanno un'unica chiave
+export function taglieOrdinate(r) {
+  if (r.taglie && Object.keys(r.taglie).length) {
+    return Object.fromEntries(Object.entries(r.taglie).map(([t, q]) => [t, Number(q) || 0]));
+  }
+  return { [SENZA_TAGLIA]: r.qta || 0 };
+}
+const somma = (t) => Object.values(t || {}).reduce((s, q) => s + (Number(q) || 0), 0);
+export { somma as sommaTaglie };
+
+// Quantità già ricevute per riga e per taglia, sommando tutte le distinte dell'ordine
+export function ricevutoPerTaglia(ordineId) {
   const m = new Map();
   for (const d of M.distinte.values()) {
     if (d.ordineId !== ordineId) continue;
-    for (const r of d.righe) m.set(r.rigaId, (m.get(r.rigaId) || 0) + (r.ricevuti || 0));
+    for (const r of d.righe) {
+      const t = m.get(r.rigaId) || {};
+      for (const [k, q] of Object.entries(r.ricevute || {})) t[k] = (t[k] || 0) + (Number(q) || 0);
+      m.set(r.rigaId, t);
+    }
   }
+  return m;
+}
+
+// Totale ricevuto per riga (somma delle taglie)
+export function ricevutoPerRiga(ordineId) {
+  const m = new Map();
+  for (const [id, t] of ricevutoPerTaglia(ordineId)) m.set(id, somma(t));
+  return m;
+}
+
+const fmtDelta = (o) => Object.entries(o).map(([t, n]) => `${t === SENZA_TAGLIA ? 'pezzi' : t}: ${n > 0 ? '+' : '−'}${Math.abs(n)}`).join(' · ');
+
+// Confronto ordinato/ricevuto di una riga: conforme solo se ogni taglia corrisponde
+export function confrontoTaglie(ordinate, ricevute) {
+  const mancanti = {}, eccedenze = {};
+  for (const t of new Set([...Object.keys(ordinate), ...Object.keys(ricevute || {})])) {
+    const d = (Number(ricevute?.[t]) || 0) - (Number(ordinate[t]) || 0);
+    if (d < 0) mancanti[t] = d;
+    else if (d > 0) eccedenze[t] = d;
+  }
+  const totOrd = somma(ordinate), totRic = somma(ricevute);
+  const hasM = Object.keys(mancanti).length > 0, hasE = Object.keys(eccedenze).length > 0;
+  let stato;
+  if (!hasM && !hasE) stato = 'conforme';
+  else if (!totRic) stato = 'non ricevuto';
+  else if (hasM && !hasE) stato = 'da completare';
+  else if (hasE && !hasM) stato = 'eccedenza';
+  else stato = totRic === totOrd ? 'taglie diverse' : 'eccedenze e mancanze';
+  const conformi = Object.keys(ordinate).reduce((s, t) => s + Math.min(ordinate[t] || 0, Number(ricevute?.[t]) || 0), 0);
+  return { stato, mancanti, eccedenze, totOrd, totRic, conformi, descr: fmtDelta({ ...mancanti, ...eccedenze }) };
+}
+// Stati che sono una discrepanza da segnalare (non semplici consegne ancora attese)
+export const DISCREPANZE = ['eccedenza', 'taglie diverse', 'eccedenze e mancanze'];
+
+// Stato di ogni riga dell'ordine rispetto a quanto ricevuto finora
+export function statoRigheOrdine(ordineId) {
+  const ric = ricevutoPerTaglia(ordineId);
+  const m = new Map();
+  for (const r of righeOrdine(ordineId)) m.set(r.id, confrontoTaglie(taglieOrdinate(r), ric.get(r.id) || {}));
   return m;
 }
 
@@ -323,32 +395,37 @@ export async function riordinaFoto(rigaId, ids) {
   tocca();
 }
 
-// Controlli bloccanti prima della conferma dell'ordine
+// Controlli bloccanti prima della conferma dell'ordine (decisi con il cliente il 15/10/2026):
+// testata: società, stagione, fornitore; articolo: codice (colore in fondo dopo uno spazio),
+// categoria, sottocategoria, genere, prezzo, quantità. Colore, foto, pagamento, consegna e sconti
+// sono facoltativi.
 export function erroriRiga(r) {
   const e = [];
   const ec = controllaCodice(r.codArt);
   if (ec) e.push(ec);
   if (!r.macroId) e.push('Categoria obbligatoria');
   if (!r.catId) e.push('Sottocategoria obbligatoria');
-  if (!r.coloreId) e.push('Colore obbligatorio');
   if (!r.genere) e.push('Genere obbligatorio');
   if (!(r.prezzo > 0)) e.push('Prezzo obbligatorio');
   if (!(r.qta > 0)) e.push('Quantità obbligatoria');
-  const nf = fotoRiga(r.id).length;
-  if (nf < state.imp.minFoto) e.push(`Foto: ${nf} su ${state.imp.minFoto} minime`);
+  if (state.imp.minFoto > 0) {
+    const nf = fotoRiga(r.id).length;
+    if (nf < state.imp.minFoto) e.push(`Foto: ${nf} su ${state.imp.minFoto} minime`);
+  }
   return e;
 }
 export function erroriOrdine(o) {
   const e = [];
   if (!o.aziendaId) e.push('Società obbligatoria');
+  if (!o.anno || !o.stagione) e.push('Stagione obbligatoria');
   if (!o.fornitoreId) e.push('Fornitore obbligatorio');
-  if (!o.pagamento) e.push('Condizioni di pagamento obbligatorie');
-  if (!o.consegnaDa || !o.consegnaA) e.push('Periodo di consegna obbligatorio');
-  else if (o.consegnaA < o.consegnaDa) e.push('Periodo di consegna non valido');
+  if (o.consegnaDa && o.consegnaA && o.consegnaA < o.consegnaDa) e.push('Periodo di consegna non valido');
   const righe = righeOrdine(o.id);
   if (!righe.length) e.push('Nessun articolo inserito');
-  const conErrori = righe.filter((r) => erroriRiga(r).length).length;
-  if (conErrori) e.push(`${conErrori} articol${conErrori === 1 ? 'o incompleto' : 'i incompleti'}`);
+  for (const r of righe) {
+    const er = erroriRiga(r);
+    if (er.length) e.push(`${r.codArt || '(articolo senza codice)'}: ${er.join('; ')}`);
+  }
   return e;
 }
 
@@ -412,44 +489,112 @@ export async function trasmetti(ids, destinatari) {
   tocca();
 }
 
-// Distinta di ricezione: aggiorna lo stato dell'ordine (simula il sistema centrale)
-// e la invia ad amministrazione e buyer.
-export async function inviaDistinta({ ordineId, msgId, righe, note }) {
-  const prima = ricevutoPerRiga(ordineId);
-  const tutte = righeOrdine(ordineId);
-  const pezziOrdinati = tutte.reduce((s, r) => s + (r.qta || 0), 0);
-  const pezziRicevuti = righe.reduce((s, r) => s + (r.ricevuti || 0), 0);
-  let pezziTot = 0, valOrd = 0, valRic = 0;
-  const ora = new Map(righe.map((r) => [r.rigaId, r.ricevuti || 0]));
-  for (const r of tutte) {
-    const ric = Math.min(r.qta || 0, (prima.get(r.id) || 0) + (ora.get(r.id) || 0));
-    pezziTot += ric;
-    const pu = (r.prezzo || 0) * (1 - (r.sconto || 0) / 100);
-    valOrd += pu * (r.qta || 0);
-    valRic += pu * ric;
+// Riepilogo delle differenze di un ordine, per notifiche e chiusura
+function riepilogoDifferenze(ordineId) {
+  const st = statoRigheOrdine(ordineId);
+  let mancanti = 0, eccedenze = 0;
+  const righe = [];
+  for (const r of righeOrdine(ordineId)) {
+    const c = st.get(r.id);
+    mancanti -= somma(c.mancanti);
+    eccedenze += somma(c.eccedenze);
+    if (c.stato !== 'conforme') righe.push({ rigaId: r.id, codArt: r.codArt, stato: c.stato, descr: c.descr });
   }
-  const percentuale = pezziOrdinati ? (pezziTot / pezziOrdinati) * 100 : 0;
-  const tipo = pezziTot >= pezziOrdinati ? 'totale' : 'parziale';
-  const problemi = righe.filter((r) => r.problema).length;
+  return { mancanti, eccedenze, righe, discrepanze: righe.filter((x) => DISCREPANZE.includes(x.stato)).length };
+}
+
+async function avvisa(ordineId, tipo, titolo, extra = {}) {
+  for (const dest of ['amministrazione', 'buyer']) {
+    await aggiungiMessaggio({ a: dest, da: state.ruolo, tipo, ordineId, data: oraIso(), letto: false, titolo, ...extra });
+  }
+}
+
+// Distinta di ricezione per taglia. Aggiorna lo stato dell'ordine (simula il sistema centrale)
+// e la invia ad amministrazione e buyer. righe: [{ rigaId, codArt, descrizione, ricevute: {taglia: n}, problema, nota }]
+// chiusura: { nota } per chiudere l'ordine nonostante le differenze (responsabilità di chi riceve).
+export async function inviaDistinta({ ordineId, msgId, righe, note, chiusura = null }) {
+  const prima = ricevutoPerTaglia(ordineId);
+  const ora = new Map(righe.map((r) => [r.rigaId, r]));
+  const tutte = righeOrdine(ordineId);
+  let pezziOrdinati = 0, pezziConformi = 0, valOrd = 0, valRic = 0;
+  const righeDistinta = [];
+  let tutteConformi = true;
+  for (const r of tutte) {
+    const ordinate = taglieOrdinate(r);
+    const p = prima.get(r.id) || {};
+    const x = ora.get(r.id);
+    const ricevute = x ? Object.fromEntries(Object.entries(x.ricevute || {}).filter(([, q]) => Number(q) > 0)) : {};
+    const cumulate = { ...p };
+    for (const [t, q] of Object.entries(ricevute)) cumulate[t] = (cumulate[t] || 0) + Number(q);
+    const c = confrontoTaglie(ordinate, cumulate);
+    if (c.stato !== 'conforme') tutteConformi = false;
+    pezziOrdinati += c.totOrd;
+    pezziConformi += c.conformi;
+    const pu = (r.prezzo || 0) * (1 - (r.sconto || 0) / 100);
+    valOrd += pu * c.totOrd;
+    valRic += pu * c.conformi;
+    if (somma(ricevute) || x?.problema) {
+      righeDistinta.push({
+        rigaId: r.id, codArt: r.codArt, descrizione: r.descrizione || '', conGriglia: !!r.grigliaId,
+        ordinate, prima: p, ricevute, cumulate, stato: c.stato, descr: c.descr,
+        ordinati: c.totOrd, ricevuti: somma(ricevute), problema: x?.problema || '', nota: x?.nota || '',
+      });
+    }
+  }
+  const percentuale = pezziOrdinati ? (pezziConformi / pezziOrdinati) * 100 : 0;
+  const tipo = tutteConformi ? 'totale' : 'parziale';
+  const problemi = righeDistinta.filter((r) => r.problema).length;
   const d = {
-    ordineId, msgId, ruolo: state.ruolo, data: oraIso(), righe, note: note || '',
-    pezziOrdinati, pezziRicevuti, pezziRicevutiTot: pezziTot, perc: percentuale,
+    ordineId, msgId, ruolo: state.ruolo, data: oraIso(), righe: righeDistinta, note: note || '',
+    pezziOrdinati, pezziRicevuti: righeDistinta.reduce((s, r) => s + r.ricevuti, 0), pezziConformi, perc: percentuale,
     valoreOrdinato: valOrd, valoreRicevuto: valRic, tipo, problemi,
   };
   d.id = await db.distinte.add(d);
   M.distinte.set(d.id, d);
+  const diff = riepilogoDifferenze(ordineId);
+  d.discrepanze = diff.discrepanze;
+  await db.distinte.put(d);
   const o = M.ord.get(ordineId);
-  await salvaOrdine({ ...o, stato: tipo === 'totale' ? 'chiuso' : 'parziale' });
-  for (const dest of ['amministrazione', 'buyer']) {
-    await aggiungiMessaggio({
-      a: dest, da: state.ruolo, tipo: 'distinta', ordineId, distintaId: d.id, data: d.data, letto: false,
-      titolo: `Distinta ${tipo} – ${titoloOrdine(o)}`,
-    });
-  }
+  const chiudi = tipo === 'totale' || !!chiusura;
+  await salvaOrdine({
+    ...o, stato: chiudi ? 'chiuso' : 'parziale',
+    ...(chiusura && tipo !== 'totale' ? { chiusura: { conDifferenze: true, ruolo: state.ruolo, data: oraIso(), nota: chiusura.nota || '', mancanti: diff.mancanti, eccedenze: diff.eccedenze } } : {}),
+  });
+  const extraTitolo = chiusura && tipo !== 'totale' ? ' · chiuso con differenze' : diff.discrepanze ? ` · ${diff.discrepanze} discrepanz${diff.discrepanze === 1 ? 'a' : 'e'} di taglia` : '';
+  await avvisa(ordineId, 'distinta', `Distinta ${tipo} – ${titoloOrdine(o)}${extraTitolo}`, { distintaId: d.id });
   await logga(`Inviata distinta ${tipo} (${Math.round(percentuale)}%)`, 'ordine', ordineId,
-    problemi ? `${problemi} segnalazion${problemi === 1 ? 'e' : 'i'}` : '');
+    [problemi ? `${problemi} segnalazion${problemi === 1 ? 'e' : 'i'}` : '', diff.discrepanze ? `${diff.discrepanze} discrepanze di taglia` : '']
+      .filter(Boolean).join(' · '));
+  if (chiusura && tipo !== 'totale') {
+    await logga('Ordine chiuso con differenze', 'ordine', ordineId,
+      `mancanti ${diff.mancanti}, eccedenze ${diff.eccedenze}${chiusura.nota ? ' – ' + chiusura.nota : ''}`);
+  }
   tocca();
   return d;
+}
+
+// Chiusura di un ordine parzialmente ricevuto senza nuove consegne: chi riceve se ne assume la responsabilità
+export async function chiudiConDifferenze(ordineId, nota) {
+  const o = M.ord.get(ordineId);
+  const diff = riepilogoDifferenze(ordineId);
+  await salvaOrdine({
+    ...o, stato: 'chiuso',
+    chiusura: { conDifferenze: true, ruolo: state.ruolo, data: oraIso(), nota: nota || '', mancanti: diff.mancanti, eccedenze: diff.eccedenze },
+  });
+  await avvisa(ordineId, 'chiusura', `Ordine chiuso con differenze – ${titoloOrdine(o)}`);
+  await logga('Ordine chiuso con differenze', 'ordine', ordineId,
+    `mancanti ${diff.mancanti}, eccedenze ${diff.eccedenze}${nota ? ' – ' + nota : ''}`);
+  tocca();
+}
+
+// ---------- budget ----------
+export const chiaveBudget = (sk, livello, id) => `${sk}|${livello}|${id}`;
+export async function salvaBudget(sk, livello, id, valore) {
+  const k = chiaveBudget(sk, livello, id);
+  const v = Number(valore) || 0;
+  if (v > 0) { await db.budget.put({ k, v }); M.budget.set(k, v); }
+  else { await db.budget.delete(k); M.budget.delete(k); }
+  tocca();
 }
 
 export function nonLetti(ruolo) {

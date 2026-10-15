@@ -1,5 +1,12 @@
 // Costanti, formattazione ed elaborazione immagini.
 
+// Identità di questa versione: archivio, chiavi locali e cache separati dalla v1
+// (stesso dominio GitHub Pages, quindi stesso spazio di archiviazione del browser)
+export const APP = { db: 'white7-buying-v2', db1: 'white7-buying', locale: 'w7v2.', versione: '2' };
+
+// Chiave delle quantità per gli articoli senza griglia taglie
+export const SENZA_TAGLIA = '_';
+
 export const RUOLI = {
   buyer: { nome: 'Buyer', breve: 'Buyer', colore: '#1d4f91', prezzi: true },
   amministrazione: { nome: 'Amministrazione', breve: 'Ammin.', colore: '#6a3fb0', prezzi: true },

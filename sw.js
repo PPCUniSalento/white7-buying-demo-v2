@@ -1,7 +1,10 @@
 // Service worker: salva tutti i file dell'app per l'uso offline.
 // A ogni pubblicazione con file modificati va incrementata VERSIONE.
+// La v1 della demo è sullo stesso dominio: le cache di questa versione hanno il prefisso
+// PREFISSO e all'attivazione si cancellano solo quelle, mai le cache della v1.
 
-const VERSIONE = 'w7-v1';
+const PREFISSO = 'w7v2-';
+const VERSIONE = PREFISSO + '1';
 const FILE = [
   './',
   'index.html',
@@ -33,7 +36,7 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((chiavi) => Promise.all(chiavi.filter((k) => k !== VERSIONE).map((k) => caches.delete(k))))
+      .then((chiavi) => Promise.all(chiavi.filter((k) => k.startsWith(PREFISSO) && k !== VERSIONE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });

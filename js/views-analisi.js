@@ -1,12 +1,12 @@
 // Ricerca articoli e report (sintesi per categoria/brand, confronto stagioni).
 
-import { M, state, stagioni, nomeAzienda, nomeFornitore, nomeCat, nomeColore, nomeMacro } from './db.js';
-import { cerca, perFornitore, sintesi, confronto, FILTRI_VUOTI } from './analisi.js';
+import { M, state, stagioni, nomeAzienda, nomeFornitore, nomeCat, nomeColore, nomeMacro, salvaBudget } from './db.js';
+import { cerca, perFornitore, sintesi, confronto, budgetVoci, FILTRI_VUOTI } from './analisi.js';
 import { esportaRighe } from './excel.js';
-import { STATI, GENERI, euro, euro0, num, perc, delta, stagioneNome, stagionePrec } from './util.js';
+import { STATI, GENERI, euro, euro0, num, perc, delta, data, stagioneNome, stagionePrec, stagioneOrd, stagioneSucc } from './util.js';
 import { toast } from './comp.js';
 
-const { ref, reactive, computed } = Vue;
+const { ref, reactive, computed, watch } = Vue;
 
 const ETICHETTE = {
   stagione: (v) => stagioneNome(v), aziendaId: (v) => nomeAzienda(+v), fornitoreId: (v) => nomeFornitore(+v),
@@ -21,8 +21,11 @@ const stagioneRicca = (elenco) => elenco.find((x) => nOrdini(x) >= 10) || elenco
 
 // ---------------------------------------------------------------- ricerca
 export const Ricerca = {
-  setup() {
+  props: { query: Object },
+  setup(p) {
     const f = reactive(FILTRI_VUOTI());
+    // filtri passati nel link (es. dall'avviso di sovrapposizione nella scheda articolo)
+    for (const k of ['stagione', 'macroId', 'catId', 'coloreId', 'fornitoreId']) if (p.query?.[k]) f[k] = p.query[k];
     const pannello = ref(false), aperti = reactive(new Set()), limiteGruppi = ref(25);
     const elencoStagioni = stagioni();
     const categorie = computed(() => M.categorie.filter((c) => !f.macroId || c.macroId === +f.macroId).sort((a, b) => a.nome.localeCompare(b.nome)));
@@ -134,11 +137,44 @@ export const Report = {
     const skS = ref(nOrdini(state.imp.stagioneLavoro) >= 10 ? state.imp.stagioneLavoro : stagioneRicca(elencoStagioni));
     const skA = ref(skS.value);
     const skB = ref(elencoStagioni.includes(stagionePrec(skA.value)) ? stagionePrec(skA.value) : elencoStagioni[1]);
+    // la variazione si calcola sempre dalla stagione più vecchia (B) alla più recente (A)
+    watch([skA, skB], ([a, b]) => { if (a && b && stagioneOrd(a) < stagioneOrd(b)) { skA.value = b; skB.value = a; } });
+    // confronto a parità di data: della stagione B solo gli ordini inseriti entro la stessa data, n anni prima
+    const paritaData = ref(false);
+    const finoB = computed(() => {
+      const anni = parseInt(skA.value.slice(0, 4), 10) - parseInt(skB.value.slice(0, 4), 10);
+      if (anni <= 0) return null;
+      const d = new Date();
+      d.setFullYear(d.getFullYear() - anni);
+      return d.toISOString().slice(0, 10);
+    });
+    // budget
+    const skBud = ref(state.imp.stagioneLavoro || elencoStagioni[0]);
+    const stagioniBudget = [...new Set([stagioneSucc(elencoStagioni[0]), ...elencoStagioni])].sort((a, b) => stagioneOrd(b) - stagioneOrd(a));
+    const livBud = ref('macro'), modBud = ref(false), nuovaVoce = ref(null);
+    const extra = ref([]);
+    const NOMI = { macro: nomeMacro, cat: nomeCat, brand: nomeFornitore };
+    const b = computed(() => {
+      state.rev;
+      const r = budgetVoci(skBud.value, livBud.value, azienda.value);
+      const presenti = new Set(r.voci.map((v) => v.id));
+      const agg = extra.value.filter((e) => e.liv === livBud.value && !presenti.has(e.id))
+        .map((e) => ({ id: e.id, nome: NOMI[e.liv](e.id), pezzi: 0, valore: 0, budget: 0 }));
+      return { voci: [...r.voci, ...agg], tot: r.tot };
+    });
+    const opzioniNuove = computed(() => {
+      const presenti = new Set(b.value.voci.map((v) => v.id));
+      if (livBud.value === 'macro') return M.macro.filter((x) => !presenti.has(x.id));
+      if (livBud.value === 'cat') return M.categorie.filter((x) => !presenti.has(x.id)).sort((x, y) => x.nome.localeCompare(y.nome));
+      return [];
+    });
+    const imposta = (v, valore) => salvaBudget(skBud.value, livBud.value, v.id, valore);
+    function aggiungi(id) { if (id) extra.value.push({ liv: livBud.value, id: Number(id) }); nuovaVoce.value = null; }
     const livello = ref('macro');
     const tabella = ref(false);
     const aperte = reactive(new Set());
     const s = computed(() => { state.rev; return sintesi(skS.value, azienda.value); });
-    const c = computed(() => { state.rev; return confronto(skA.value, skB.value, livello.value, azienda.value); });
+    const c = computed(() => { state.rev; return confronto(skA.value, skB.value, livello.value, azienda.value, { finoB: paritaData.value ? finoB.value : null }); });
     const maxV = computed(() => Math.max(1, ...c.value.righe.map((r) => Math.max(r.vA, r.vB))));
     const toggle = (k) => (aperte.has(k) ? aperte.delete(k) : aperte.add(k));
     const marchi = (cat) => cat.brand.map((b) => `${b.nome.split(/\s+/).slice(0, 2).join(' ')} ${num(b.pezzi)}`).join(', ');
@@ -146,13 +182,15 @@ export const Report = {
     const dTxt = (v) => (v == null ? 'nuovo' : `${v >= 0 ? '+' : ''}${perc(v)}`);
     return {
       elencoStagioni, scheda, azienda, skS, skA, skB, livello, tabella, aperte, s, c, maxV, toggle, marchi, dCls, dTxt,
-      M, euro0, num, perc, delta, stagioneNome,
+      paritaData, finoB, skBud, stagioniBudget, livBud, modBud, nuovaVoce, b, opzioniNuove, imposta, aggiungi, state,
+      M, euro0, num, perc, delta, data, stagioneNome,
     };
   },
   template: `<div class="pagina">
     <page-head titolo="Report" sotto="Distribuzione degli acquisti"/>
-    <div class="seg pieno"><button :class="{on: scheda === 'sintesi'}" @click="scheda = 'sintesi'">Sintesi stagione</button>
-      <button :class="{on: scheda === 'confronto'}" @click="scheda = 'confronto'">Confronto stagioni</button></div>
+    <div class="seg pieno"><button :class="{on: scheda === 'sintesi'}" @click="scheda = 'sintesi'">Sintesi</button>
+      <button :class="{on: scheda === 'confronto'}" @click="scheda = 'confronto'">Confronto</button>
+      <button :class="{on: scheda === 'budget'}" @click="scheda = 'budget'">Budget</button></div>
 
     <template v-if="scheda === 'sintesi'">
       <div class="filtri-riga">
@@ -173,7 +211,7 @@ export const Report = {
       </section>
     </template>
 
-    <template v-else>
+    <template v-else-if="scheda === 'confronto'">
       <div class="filtri-riga">
         <select class="inp" v-model="skA"><option v-for="x in elencoStagioni" :value="x">{{ stagioneNome(x) }}</option></select>
         <span class="vs">vs</span>
@@ -185,11 +223,13 @@ export const Report = {
       <div class="filtri-riga">
         <select class="inp" v-model="azienda"><option value="">Tutte le società</option><option v-for="a in M.aziende" :value="a.id">{{ a.nome }}</option></select>
       </div>
+      <label v-if="finoB" class="check parita"><input type="checkbox" v-model="paritaData"> A parità di data
+        <small v-if="paritaData">· {{ stagioneNome(skB) }} con i soli ordini inseriti entro il {{ data(finoB) }}</small></label>
       <section class="card">
         <div class="conf-tot">
           <div><small>{{ stagioneNome(skA) }}</small><b>{{ euro0(c.tot.vA) }}</b><span>{{ num(c.tot.pA) }} capi</span></div>
           <div><small>{{ stagioneNome(skB) }}</small><b>{{ euro0(c.tot.vB) }}</b><span>{{ num(c.tot.pB) }} capi</span></div>
-          <div><small>Variazione</small><b :class="dCls(delta(c.tot.vA, c.tot.vB))">{{ dTxt(delta(c.tot.vA, c.tot.vB)) }}</b>
+          <div><small>Variazione su {{ stagioneNome(skB) }}</small><b :class="dCls(delta(c.tot.vA, c.tot.vB))">{{ dTxt(delta(c.tot.vA, c.tot.vB)) }}</b>
             <span>capi {{ dTxt(delta(c.tot.pA, c.tot.pB)) }}</span></div>
         </div>
         <div class="legenda"><span class="la"></span>{{ stagioneNome(skA) }} <span class="lb"></span>{{ stagioneNome(skB) }}
@@ -212,6 +252,47 @@ export const Report = {
             <td class="n" :class="dCls(delta(r.vA, r.vB))">{{ dTxt(delta(r.vA, r.vB)) }}</td><td class="n">{{ perc(r.iA) }}</td><td class="n">{{ perc(r.iB) }}</td></tr></tbody>
         </table>
       </div>
+    </template>
+
+    <template v-else>
+      <div class="filtri-riga">
+        <select class="inp" v-model="skBud"><option v-for="x in stagioniBudget" :value="x">{{ stagioneNome(x) }}</option></select>
+        <select class="inp" v-model="azienda"><option value="">Tutte le società</option><option v-for="a in M.aziende" :value="a.id">{{ a.nome }}</option></select>
+      </div>
+      <div class="seg pieno"><button :class="{on: livBud === 'macro'}" @click="livBud = 'macro'">Categoria</button>
+        <button :class="{on: livBud === 'cat'}" @click="livBud = 'cat'">Sottocat.</button>
+        <button :class="{on: livBud === 'brand'}" @click="livBud = 'brand'">Brand</button></div>
+      <section class="card">
+        <div class="conf-tot">
+          <div><small>Budget</small><b>{{ euro0(b.tot.budget) }}</b></div>
+          <div><small>Ordinato</small><b>{{ euro0(b.tot.valore) }}</b><span>{{ num(b.tot.pezzi) }} capi</span></div>
+          <div><small>{{ b.tot.valore > b.tot.budget ? 'Oltre il budget' : 'Disponibile' }}</small>
+            <b :class="b.tot.valore > b.tot.budget ? 'giu' : 'su'">{{ euro0(Math.abs(b.tot.budget - b.tot.valore)) }}</b>
+            <span v-if="b.tot.budget">usato {{ perc(b.tot.valore / b.tot.budget * 100) }}</span></div>
+        </div>
+        <div class="riga-az"><span class="muted">Budget di acquisto per {{ livBud === 'macro' ? 'categoria' : livBud === 'cat' ? 'sottocategoria' : 'brand' }}, a valore</span>
+          <button class="btn piccolo" :class="{primario: modBud}" @click="modBud = !modBud">{{ modBud ? 'Fatto' : 'Modifica budget' }}</button></div>
+      </section>
+      <section class="card">
+        <div v-for="v in b.voci" :key="String(v.id)" class="bud-r">
+          <div class="conf-h"><b>{{ v.nome }}</b>
+            <span v-if="v.budget" :class="v.valore > v.budget ? 'giu' : ''">{{ perc(v.valore / v.budget * 100) }}</span></div>
+          <div class="bud-v">
+            <span>{{ euro0(v.valore) }} · {{ num(v.pezzi) }} capi</span>
+            <input v-if="modBud" class="inp bud-inp" type="number" inputmode="decimal" min="0" step="100" :value="v.budget || ''"
+              placeholder="Budget €" @change="imposta(v, $event.target.value)">
+            <span v-else class="muted">{{ v.budget ? 'budget ' + euro0(v.budget) : 'nessun budget' }}</span>
+          </div>
+          <div v-if="v.budget" class="barra-perc" :class="{oltre: v.valore > v.budget}"><i :style="{width: Math.min(100, v.valore / v.budget * 100) + '%'}"></i></div>
+        </div>
+        <p v-if="!b.voci.length" class="vuoto">Nessun ordine e nessun budget per questa stagione.</p>
+        <div v-if="modBud" class="bud-agg">
+          <select v-if="livBud !== 'brand'" class="inp" v-model="nuovaVoce" @change="aggiungi(nuovaVoce)">
+            <option :value="null">Aggiungi {{ livBud === 'macro' ? 'categoria' : 'sottocategoria' }}…</option>
+            <option v-for="o in opzioniNuove" :key="o.id" :value="o.id">{{ o.nome }}</option></select>
+          <fornitore-picker v-else :model-value="null" @update:model-value="aggiungi($event)"/>
+        </div>
+      </section>
     </template>
   </div>`,
 };

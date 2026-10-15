@@ -1,17 +1,20 @@
 // Export Excel (ExcelJS, caricato solo quando serve) con l'immagine principale.
 
-import { M, nomeAzienda, nomeFornitore, nomeMacro, nomeCat, nomeColore, fotoPrincipale, stagioneOrdine, statoConsegna, ricevutoPerRiga } from './db.js';
+import { M, nomeAzienda, nomeFornitore, nomeMacro, nomeCat, nomeColore, fotoPrincipale, stagioneOrdine, statoConsegna, statoRigheOrdine } from './db.js';
 import { GENERI, STATI, stagioneNome, totaleRiga, blobBase64, condividiFile, caricaScript, data } from './util.js';
 
 const MAX_IMMAGINI = 400;
 
-function statoConsegnaRiga(r, o, ricevuti) {
+// Stato di consegna della riga, confrontando ordinato e ricevuto taglia per taglia
+function statoConsegnaRiga(r, o, stati) {
   if (o.storico && o.stato === 'chiuso') return 'Consegnato';
   const sc = statoConsegna(o);
   if (sc === 'non trasmesso' || sc === 'in attesa') return sc === 'in attesa' ? 'In attesa' : 'Non trasmesso';
-  const ric = ricevuti.get(r.id) || 0;
-  if (ric >= (r.qta || 0)) return 'Consegnato';
-  return ric ? `Parziale (${ric}/${r.qta})` : 'Non ricevuto';
+  const c = stati.get(r.id);
+  if (!c || c.stato === 'conforme') return 'Consegnato conforme';
+  const st = o.stato === 'chiuso' && (c.stato === 'da completare' || c.stato === 'non ricevuto') ? 'mancante' : c.stato;
+  const nome = st.charAt(0).toUpperCase() + st.slice(1);
+  return c.descr ? `${nome} (${c.descr})` : nome;
 }
 
 // righe: array di righe d'ordine; prezzi: false per logistica e punti vendita
@@ -42,7 +45,7 @@ export async function esportaRighe(righe, { nomeFile, titolo, prezzi = true }) {
   let immagini = 0;
   for (const r of righe) {
     const o = M.ord.get(r.ordineId);
-    if (!ricevutiPerOrdine.has(o.id)) ricevutiPerOrdine.set(o.id, ricevutoPerRiga(o.id));
+    if (!ricevutiPerOrdine.has(o.id)) ricevutiPerOrdine.set(o.id, statoRigheOrdine(o.id));
     const taglie = r.taglie ? Object.entries(r.taglie).filter(([, q]) => q).map(([t, q]) => `${t}:${q}`).join(' ') : '';
     const valori = [
       nomeAzienda(o.aziendaId), stagioneNome(stagioneOrdine(o)), nomeFornitore(o.fornitoreId), o.id, r.codArt,

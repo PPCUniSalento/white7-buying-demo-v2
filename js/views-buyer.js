@@ -3,12 +3,13 @@
 import {
   M, state, righeOrdine, fotoRiga, nomeFornitore, nomeAzienda, nomeCat, nomeColore, stagioni, stagioneOrdine,
   salvaOrdine, nuovoOrdine, eliminaOrdine, salvaRiga, eliminaRiga, erroriRiga, erroriOrdine, cambiaStato,
-  trasmetti, riepilogo, logga, salvaImpostazioni, nonLetti, segnaLetto, titoloOrdine, descriviCambio,
+  trasmetti, riepilogo, logga, salvaImpostazioni, nonLetti, segnaLetto, titoloOrdine, descriviCambio, chiaveBudget,
 } from './db.js';
+import { apriMessaggio } from './views-arrivi.js';
 import { avvisi } from './analisi.js';
 import { esportaRighe } from './excel.js';
 import {
-  RUOLI, STATI, GENERI, euro, euro0, num, data, dataOra, mese, meseCorrente, stagioneNome, stagionePrec, stagioneOrd,
+  RUOLI, STATI, GENERI, euro, euro0, num, perc, data, dataOra, mese, meseCorrente, stagioneNome, stagionePrec, stagioneOrd,
   totaleRiga, controllaCodice, debounce, consegnaStagione,
 } from './util.js';
 import { toast } from './comp.js';
@@ -41,7 +42,7 @@ const BarraTotale = {
     return { aperto, o, righe, r, euro, num };
   },
   template: `<div class="barra-tot" role="button" @click="aperto = true">
-      <div class="bt-v"><b>{{ euro(r.valore) }}</b><span>{{ num(r.pezzi) }} capi · {{ righe.length }} articoli</span></div>
+      <div class="bt-v"><b>{{ euro(r.valore) }}</b><span>{{ num(r.pezzi) }} capi · {{ righe.length }} articol{{ righe.length === 1 ? 'o' : 'i' }}</span></div>
       <div class="bt-c"><span v-for="m in r.macro.slice(0, 3)" :key="m.id">{{ m.nome }} {{ num(m.pezzi) }}</span></div>
       <ic n="up" :s="18"/>
     </div>
@@ -49,6 +50,25 @@ const BarraTotale = {
       <riepilogo :righe="righe" :sconto-extra="o?.scontoExtra"/>
     </sheet>`,
 };
+
+// Riepilogo sempre visibile a destra su schermi larghi (iPad): totali per categoria e sottocategoria
+const PannelloRiepilogo = {
+  props: { ordineId: Number },
+  setup(p) {
+    const o = computed(() => { state.rev; return M.ord.get(p.ordineId); });
+    const righe = computed(() => { state.rev; return [...righeOrdine(p.ordineId)]; });
+    const r = computed(() => riepilogo(righe.value, o.value?.scontoExtra));
+    return { o, righe, r, euro, num };
+  },
+  template: `<aside class="col-riep"><section class="card riep-fisso">
+    <div class="card-h"><h2>Riepilogo ordine n. {{ ordineId }}</h2></div>
+    <div class="riep-tot"><b>{{ euro(r.valore) }}</b><span>{{ num(r.pezzi) }} capi · {{ righe.length }} articol{{ righe.length === 1 ? 'o' : 'i' }}</span></div>
+    <riepilogo :righe="righe" :sconto-extra="o?.scontoExtra"/>
+  </section></aside>`,
+};
+
+// Suggerimenti per le condizioni di pagamento (campo libero)
+const elencoPagamenti = () => [...new Set([...(M.pagamenti || []), 'Conto vendita'])];
 
 // ---------------------------------------------------------------- pannello
 export const PannelloBuyer = {
@@ -79,6 +99,13 @@ export const PannelloBuyer = {
       return [tot(sk.value), tot(stagionePrec(sk.value))];
     });
     const al = computed(() => { state.rev; return avvisi(sk.value); });
+    const budget = computed(() => {
+      state.rev;
+      let b = 0;
+      const pre = `${sk.value}|macro|`;
+      for (const [k, v] of M.budget) if (k.startsWith(pre)) b += v;
+      return b;
+    });
     const notifiche = computed(() => {
       state.rev;
       return [...M.messaggi.values()].filter((m) => m.a === 'buyer').sort((a, b) => b.data.localeCompare(a.data)).slice(0, 5);
@@ -94,10 +121,9 @@ export const PannelloBuyer = {
         .sort((a, b) => (b.modificato || b.data || '').localeCompare(a.modificato || a.data || '')).slice(0, 6);
     });
     async function nuovo() { const o = await nuovoOrdine(); vai(`#/ordine/${o.id}`); }
-    function apriNotifica(m) { segnaLetto(m.id); vai(m.tipo === 'distinta' ? `#/distinta/${m.distintaId}` : `#/ordine/${m.ordineId}`); }
     return {
-      tutti, sk, conteggi, stag, al, notifiche, ritardi, ultimi, nuovo, apriNotifica, stagioni: stagioniDisponibili(),
-      stagioneNome, euro0, num, mese, dataOra, nomeFornitore, totaliOrdine, euro, STATI,
+      tutti, sk, conteggi, stag, al, budget, notifiche, ritardi, ultimi, nuovo, apriNotifica: apriMessaggio, stagioni: stagioniDisponibili(),
+      stagioneNome, euro0, num, perc, mese, dataOra, nomeFornitore, totaliOrdine, euro, STATI,
     };
   },
   template: `<div class="pagina">
@@ -116,16 +142,20 @@ export const PannelloBuyer = {
         <select class="sel-mini" v-model="sk"><option v-for="s in stagioni" :value="s">{{ stagioneNome(s) }}</option></select></div>
       <div class="stag-conf">
         <div v-for="(s, i) in stag" :key="s.k" :class="{prec: i === 1}">
-          <small>{{ stagioneNome(s.k) }}</small><b>{{ euro0(s.v) }}</b><span>{{ num(s.p) }} capi · {{ s.n }} ordini</span></div>
+          <small>{{ stagioneNome(s.k) }}</small><b>{{ euro0(s.v) }}</b><span>{{ num(s.p) }} capi · {{ s.n }} ordin{{ s.n === 1 ? 'e' : 'i' }}</span></div>
       </div>
-      <a class="link" href="#/report">Apri report e confronto stagioni <ic n="next" :s="16"/></a>
+      <div v-if="budget" class="budget-mini">
+        <span>Budget {{ euro0(budget) }} · usato {{ perc(stag[0].v / budget * 100) }}</span>
+        <div class="barra-perc" :class="{oltre: stag[0].v > budget}"><i :style="{width: Math.min(100, stag[0].v / budget * 100) + '%'}"></i></div>
+      </div>
+      <a class="link" href="#/report">Apri report, confronto stagioni e budget <ic n="next" :s="16"/></a>
     </section>
 
     <section class="card" v-if="notifiche.length">
       <div class="card-h"><h2>Notifiche</h2></div>
       <ul class="lista">
         <li v-for="m in notifiche" :key="m.id" :class="{nuovo: !m.letto}" @click="apriNotifica(m)">
-          <ic :n="m.tipo === 'distinta' ? 'clip' : 'inbox'"/><div><b>{{ m.titolo }}</b><small>{{ dataOra(m.data) }}</small></div></li>
+          <ic :n="m.tipo === 'distinta' ? 'clip' : m.tipo === 'chiusura' ? 'lock' : 'inbox'"/><div><b>{{ m.titolo }}</b><small>{{ dataOra(m.data) }}</small></div></li>
       </ul>
     </section>
 
@@ -179,7 +209,7 @@ export const Ordini = {
     return { f, limite, elenco, daTrasm, nuovo, stagioni: stagioni(), STATI, stagioneNome, nomeFornitore, nomeAzienda, totaliOrdine, euro, num, data };
   },
   template: `<div class="pagina">
-    <page-head titolo="Ordini" :sotto="elenco.length + ' ordini'">
+    <page-head titolo="Ordini" :sotto="elenco.length + (elenco.length === 1 ? ' ordine' : ' ordini')">
       <button class="btn primario" @click="nuovo"><ic n="plus"/> Nuovo</button></page-head>
     <a v-if="daTrasm" href="#/trasmissione" class="banner"><ic n="send"/> {{ daTrasm }} ordin{{ daTrasm === 1 ? 'e confermato' : 'i confermati' }} da trasmettere</a>
     <div class="filtri-riga">
@@ -205,7 +235,7 @@ export const Ordini = {
 // ---------------------------------------------------------------- ordine
 export const Ordine = {
   props: { id: Number },
-  components: { BarraTotale },
+  components: { BarraTotale, PannelloRiepilogo },
   setup(p) {
     const orig = M.ord.get(p.id);
     if (!orig) return { mancante: true };
@@ -283,16 +313,19 @@ export const Ordine = {
     return {
       mancante: false, o, modificabile, errori, cronologia, esporta, stagioneSel, righe, nErr, nFoto, log, distinte,
       nuovoArticolo, conferma, riapri, elimina, excel, M, state, stagioni: stagioniDisponibili(),
-      stagioneNome, nomeFornitore, nomeCat, nomeColore, euro, num, data, dataOra, mese, totaleRiga, RUOLI,
+      stagioneNome, nomeFornitore, nomeCat, nomeColore, euro, num, data, dataOra, mese, totaleRiga, RUOLI, elencoPagamenti,
     };
   },
-  template: `<div class="pagina con-barra" v-if="!mancante">
+  template: `<div class="pagina con-barra layout-ordine" v-if="!mancante"><div class="col-main">
     <page-head :titolo="'Ordine n. ' + o.id" :sotto="nomeFornitore(o.fornitoreId)" indietro="#/ordini"><stato-badge :stato="o.stato"/></page-head>
 
     <div v-if="!modificabile" class="banner neutro"><ic n="lock"/>
       <span v-if="o.stato === 'confermato'">Ordine confermato. <button class="link" @click="riapri">Riporta in bozza</button> per modificarlo.</span>
       <span v-else-if="o.storico">Ordine dello storico (sola lettura).</span>
       <span v-else>Ordine trasmesso: sola lettura.</span></div>
+    <div v-if="o.chiusura?.conDifferenze" class="banner avviso"><ic n="alert"/>
+      <span>Chiuso con differenze da {{ RUOLI[o.chiusura.ruolo]?.nome }} il {{ dataOra(o.chiusura.data) }}: mancano {{ o.chiusura.mancanti }} capi,
+        eccedenze {{ o.chiusura.eccedenze }}.<template v-if="o.chiusura.nota"> «{{ o.chiusura.nota }}»</template></span></div>
 
     <section class="card">
       <div class="card-h"><h2>Testata</h2><small class="muted">inserito il {{ data(o.data) }}</small></div>
@@ -302,10 +335,11 @@ export const Ordine = {
         <label>Stagione *<select class="inp" v-model="stagioneSel" :disabled="!modificabile">
           <option v-for="s in stagioni" :value="s">{{ stagioneNome(s) }}</option></select></label>
         <label class="largo">Fornitore *<fornitore-picker v-model="o.fornitoreId" :disabled="!modificabile"/></label>
-        <label class="largo">Condizioni di pagamento *<select class="inp" v-model="o.pagamento" :disabled="!modificabile">
-          <option :value="null" disabled>Seleziona…</option><option v-for="p in M.pagamenti" :value="p">{{ p }}</option></select></label>
-        <label>Consegna da *<input class="inp" type="month" v-model="o.consegnaDa" :disabled="!modificabile"></label>
-        <label>Consegna a *<input class="inp" type="month" v-model="o.consegnaA" :disabled="!modificabile"></label>
+        <label class="largo">Condizioni di pagamento<input class="inp" list="elenco-pagamenti" v-model="o.pagamento" :disabled="!modificabile"
+            placeholder="Scegli o scrivi (es. conto vendita)" autocomplete="off">
+          <datalist id="elenco-pagamenti"><option v-for="p in elencoPagamenti()" :key="p" :value="p"></option></datalist></label>
+        <label>Consegna da<input class="inp" type="month" v-model="o.consegnaDa" :disabled="!modificabile"></label>
+        <label>Consegna a<input class="inp" type="month" v-model="o.consegnaA" :disabled="!modificabile"></label>
         <label>Sconto extra %<input class="inp" type="number" inputmode="decimal" min="0" max="100" v-model.number="o.scontoExtra" :disabled="!modificabile"></label>
         <label class="largo">Note generali / riferimenti interni<textarea class="inp" rows="2" v-model="o.note" :disabled="!modificabile"></textarea></label>
       </div>
@@ -340,11 +374,13 @@ export const Ordine = {
       <div class="card-h"><h2>Distinte di ricezione</h2></div>
       <ul class="lista">
         <li v-for="d in distinte" :key="d.id" @click="$vai('#/distinta/' + d.id)"><ic n="clip"/>
-          <div class="grow"><b>Distinta {{ d.tipo }} · {{ Math.round(d.perc) }}% ricevuto</b>
-            <small>{{ dataOra(d.data) }} · {{ RUOLI[d.ruolo].nome }}<span v-if="d.problemi"> · {{ d.problemi }} segnalazioni</span></small></div></li>
+          <div class="grow"><b>Distinta {{ d.tipo }} · {{ Math.round(d.perc) }}% conforme</b>
+            <small>{{ dataOra(d.data) }} · {{ RUOLI[d.ruolo].nome }}<span v-if="d.discrepanze"> · {{ d.discrepanze }} discrepanze di taglia</span><span v-if="d.problemi"> · {{ d.problemi }} segnalazioni</span></small></div></li>
       </ul>
     </section>
 
+    </div>
+    <pannello-riepilogo :ordine-id="o.id"/>
     <barra-totale :ordine-id="o.id"/>
 
     <sheet v-if="errori" titolo="Ordine incompleto" @chiudi="errori = null">
@@ -370,7 +406,7 @@ export const Ordine = {
 // ---------------------------------------------------------------- articolo
 export const Articolo = {
   props: { ordineId: Number, rigaId: Number },
-  components: { BarraTotale },
+  components: { BarraTotale, PannelloRiepilogo },
   setup(p) {
     const orig = M.rig.get(p.rigaId);
     const ord = M.ord.get(p.ordineId);
@@ -420,6 +456,30 @@ export const Articolo = {
 
     const erroreCodice = computed(() => (r.codArt ? controllaCodice(r.codArt) : null));
     const duplicato = computed(() => !!r.codArt && righeOrdine(p.ordineId).some((x) => x.id !== r.id && x.codArt === r.codArt.trim()));
+    // Sovrapposizioni: quanto si è già comprato della stessa sottocategoria (e colore) nella stagione,
+    // da quanti fornitori, e quanto nella stessa stagione dell'anno prima (errori di acquisto per eccesso o prudenza)
+    const sovrapp = computed(() => {
+      state.rev;
+      if (!r.catId) return null;
+      const sk = stagioneOrdine(ord), prec = stagionePrec(sk);
+      let capi = 0, capiCol = 0, capiPrec = 0;
+      const forn = new Set(), fornCol = new Set();
+      for (const x of M.rig.values()) {
+        if (x.id === r.id || x.catId !== r.catId) continue;
+        const o = M.ord.get(x.ordineId);
+        if (!o) continue;
+        const so = stagioneOrdine(o);
+        if (so === sk) {
+          capi += x.qta || 0;
+          forn.add(o.fornitoreId);
+          if (r.coloreId && x.coloreId === r.coloreId) { capiCol += x.qta || 0; fornCol.add(o.fornitoreId); }
+        } else if (so === prec) capiPrec += x.qta || 0;
+      }
+      return { sk, prec, capi, forn: forn.size, capiCol, fornCol: fornCol.size, capiPrec, cat: nomeCat(r.catId), col: r.coloreId ? nomeColore(r.coloreId) : '' };
+    });
+    const linkRicerca = computed(() => (sovrapp.value
+      ? `#/ricerca?stagione=${sovrapp.value.sk}&macroId=${r.macroId}&catId=${r.catId}${r.coloreId ? '&coloreId=' + r.coloreId : ''}` : '#/ricerca'));
+
     const storico = computed(() => {
       const cod = (r.codArt || '').trim();
       if (cod.length < 4) return null;
@@ -484,10 +544,10 @@ export const Articolo = {
 
     return {
       mancante: false, r, ord, modificabile, nuovoCod, categorie, griglie, griglia, distribuisci, erroreCodice, duplicato,
-      storico, totale, errori, maiuscolo, aggiungiVecchio, nuovoSimile, elimina, M, GENERI, euro, stagioneNome, nomeFornitore,
+      storico, sovrapp, linkRicerca, totale, errori, maiuscolo, aggiungiVecchio, nuovoSimile, elimina, M, GENERI, euro, num, stagioneNome, nomeFornitore,
     };
   },
-  template: `<div class="pagina con-barra" v-if="!mancante">
+  template: `<div class="pagina con-barra layout-ordine" v-if="!mancante"><div class="col-main">
     <page-head :titolo="r.codArt || 'Nuovo articolo'" :sotto="'Ordine n. ' + ord.id + ' · ' + nomeFornitore(ord.fornitoreId)" :indietro="'#/ordine/' + ord.id"/>
 
     <section class="card">
@@ -516,12 +576,21 @@ export const Articolo = {
           <option :value="null" disabled>Seleziona…</option><option v-for="m in M.macro" :value="m.id">{{ m.nome }}</option></select></label>
         <label>Sottocategoria *<select class="inp" v-model.number="r.catId" :disabled="!modificabile || !r.macroId">
           <option :value="null" disabled>Seleziona…</option><option v-for="c in categorie" :value="c.id">{{ c.nome }}</option></select></label>
-        <label>Colore *<select class="inp" v-model.number="r.coloreId" :disabled="!modificabile">
+        <label>Colore<select class="inp" v-model.number="r.coloreId" :disabled="!modificabile">
           <option :value="null" disabled>Seleziona…</option><option v-for="c in M.colori" :value="c.id">{{ c.nome }}</option></select>
           <small v-if="r.coloreDedotto" class="aiuto">dedotto dalla descrizione</small></label>
         <div class="lbl-grp largo">Genere *<div class="seg">
           <button v-for="(g, k) in GENERI" :key="k" :class="{on: r.genere === k}" :disabled="!modificabile" @click="r.genere = k">{{ g }}</button></div></div>
       </div>
+    </section>
+
+    <section v-if="sovrapp" class="card sovrapp" :class="{attenzione: sovrapp.forn >= 3}">
+      <div class="card-h"><h2><ic n="alert" :s="16"/> Già in {{ stagioneNome(sovrapp.sk) }}</h2>
+        <a class="link" :href="linkRicerca">Vedi <ic n="next" :s="14"/></a></div>
+      <p v-if="sovrapp.capi"><b>{{ num(sovrapp.capi) }} capi</b> di {{ sovrapp.cat.toLowerCase() }} da <b>{{ sovrapp.forn }} fornitor{{ sovrapp.forn === 1 ? 'e' : 'i' }}</b>
+        <template v-if="sovrapp.col">, di cui {{ num(sovrapp.capiCol) }} {{ sovrapp.col.toLowerCase() }} da {{ sovrapp.fornCol }}</template>.</p>
+      <p v-else>Nessun altro capo di {{ sovrapp.cat.toLowerCase() }} in questa stagione.</p>
+      <small class="muted">{{ stagioneNome(sovrapp.prec) }}: {{ num(sovrapp.capiPrec) }} capi di {{ sovrapp.cat.toLowerCase() }}</small>
     </section>
 
     <section class="card">
@@ -564,6 +633,8 @@ export const Articolo = {
       <button class="btn" @click="nuovoSimile(false)"><ic n="plus"/> Nuovo articolo</button>
       <button class="btn rosso" @click="elimina"><ic n="trash"/> Elimina articolo</button>
     </div>
+    </div>
+    <pannello-riepilogo :ordine-id="ord.id"/>
     <barra-totale :ordine-id="ord.id"/>
   </div>
   <div v-else class="pagina"><page-head titolo="Articolo non trovato" indietro="#/ordini"/></div>`,

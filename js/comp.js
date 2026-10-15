@@ -113,7 +113,7 @@ export const FornitorePicker = {
       <input class="inp" v-model="q" placeholder="Cerca per nome o codice" autofocus>
       <ul class="lista-scelta">
         <li v-for="f in elenco" :key="f.id"><button @click="scegli(f)" :class="{on: f.id === modelValue}">
-          <span>{{ f.nome }}</span><small v-if="conteggio.get(f.id)">{{ conteggio.get(f.id) }} ordini</small></button></li>
+          <span>{{ f.nome }}</span><small v-if="conteggio.get(f.id)">{{ conteggio.get(f.id) }} ordin{{ conteggio.get(f.id) === 1 ? 'e' : 'i' }}</small></button></li>
         <li v-if="!elenco.length" class="muted pad">Nessun fornitore trovato</li>
       </ul>
     </sheet></div>`,
@@ -221,10 +221,11 @@ export const FotoArticolo = {
       <button v-for="(f, k) in foto" :key="f.id" class="foto-cella" @click="modificabile ? (sel = f) : apri(k)">
         <thumb :foto-id="f.id" :w="78"/><span v-if="k === 0" class="foto-princ"><ic n="star" :s="11"/> Principale</span>
       </button>
-      <div v-for="n in Math.max(0, min - foto.length)" :key="'v' + n" class="foto-cella vuota"><ic n="camera" :s="22"/></div>
+      <div v-for="n in Math.max(foto.length ? 0 : 1, min - foto.length)" :key="'v' + n" class="foto-cella vuota"><ic n="camera" :s="22"/></div>
       <div v-if="elab" class="foto-cella vuota"><span class="spin"></span></div>
     </div>
-    <div class="foto-info" :class="{ko: foto.length < min}">{{ foto.length }} foto · minimo {{ min }}<span v-if="foto.length"> · la prima è l'immagine principale</span></div>
+    <div class="foto-info" :class="{ko: min > 0 && foto.length < min}">{{ foto.length ? foto.length + ' foto' : 'Nessuna foto' }}
+      · {{ min > 0 ? 'minimo ' + min : 'facoltative, anche tre o più' }}<span v-if="foto.length"> · la prima è l'immagine principale</span></div>
     <div v-if="modificabile" class="foto-azioni">
       <button v-if="haMirino" class="btn" @click="mirino = true"><ic n="aperture"/> Mirino</button>
       <button class="btn" @click="inpCam.click()"><ic n="camera"/> Scatta</button>

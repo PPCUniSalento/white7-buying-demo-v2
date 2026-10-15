@@ -1,6 +1,6 @@
 // Ricerca, report per categoria/brand, confronto stagioni, avvisi.
 
-import { M, state, stagioneOrdine, nomeMacro, nomeCat, nomeFornitore, nomeColore, statoConsegna } from './db.js';
+import { M, state, stagioneOrdine, nomeMacro, nomeCat, nomeFornitore, nomeColore, statoConsegna, chiaveBudget } from './db.js';
 import { totaleRiga, stagioneNome, stagionePrec } from './util.js';
 
 let cache = { rev: -1, righe: [] };
@@ -98,7 +98,9 @@ const CHIAVI = {
   brand: (x) => [x.o.fornitoreId, nomeFornitore(x.o.fornitoreId)],
 };
 
-export function confronto(skA, skB, livello, aziendaId) {
+// opz.finoB ('AAAA-MM-GG'): confronto "a parità di data", della stagione B si contano solo gli ordini
+// inseriti entro quella data (stesso punto della campagna acquisti dell'anno prima)
+export function confronto(skA, skB, livello, aziendaId, opz = {}) {
   const k = CHIAVI[livello];
   const m = new Map();
   const tot = { pA: 0, vA: 0, pB: 0, vB: 0 };
@@ -114,7 +116,7 @@ export function confronto(skA, skB, livello, aziendaId) {
     }
   };
   add(righeStagione(skA, aziendaId), 'A');
-  add(righeStagione(skB, aziendaId), 'B');
+  add(righeStagione(skB, aziendaId).filter((x) => !opz.finoB || (x.o.data || '').slice(0, 10) <= opz.finoB), 'B');
   const righe = [...m.values()]
     .map((g) => ({ ...g, iA: tot.vA ? (g.vA / tot.vA) * 100 : 0, iB: tot.vB ? (g.vB / tot.vB) * 100 : 0 }))
     .sort((a, b) => Math.max(b.vA, b.vB) - Math.max(a.vA, a.vB));
@@ -160,4 +162,30 @@ export function avvisi(sk) {
     }
   }
   return out.sort((a, b) => b.peso - a.peso);
+}
+
+// Budget di una stagione per livello (macro, cat, brand): voci con ordinato o budget
+const NOMI = { macro: nomeMacro, cat: (id) => (id ? nomeCat(id) : '(senza sottocategoria)'), brand: nomeFornitore };
+export function budgetVoci(sk, livello, aziendaId) {
+  const k = CHIAVI[livello];
+  const m = new Map();
+  for (const x of righeStagione(sk, aziendaId)) {
+    const [id, nome] = k(x);
+    let g = m.get(id);
+    if (!g) m.set(id, (g = { id, nome, pezzi: 0, valore: 0, budget: 0 }));
+    g.pezzi += x.r.qta || 0;
+    g.valore += x.tot;
+  }
+  const pre = `${sk}|${livello}|`;
+  for (const [key, v] of M.budget) {
+    if (!key.startsWith(pre)) continue;
+    const raw = key.slice(pre.length);
+    const id = raw === 'null' ? null : Number(raw);
+    if (!m.has(id)) m.set(id, { id, nome: NOMI[livello](id), pezzi: 0, valore: 0, budget: 0 });
+    m.get(id).budget = v;
+  }
+  for (const g of m.values()) if (!g.budget) g.budget = M.budget.get(chiaveBudget(sk, livello, g.id)) || 0;
+  const voci = [...m.values()].sort((a, b) => Math.max(b.budget, b.valore) - Math.max(a.budget, a.valore));
+  const tot = voci.reduce((t, g) => ({ budget: t.budget + g.budget, valore: t.valore + g.valore, pezzi: t.pezzi + g.pezzi }), { budget: 0, valore: 0, pezzi: 0 });
+  return { voci, tot };
 }
