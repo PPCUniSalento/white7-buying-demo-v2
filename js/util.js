@@ -62,6 +62,13 @@ export function mese(ym) {
   const [y, m] = ym.split('-');
   return `${MESI[parseInt(m, 10) - 1]} ${y}`;
 }
+// "manca 1 capo, 2 capi in eccedenza" (usata nei testi sulle differenze di consegna)
+export function testoDifferenze(mancanti, eccedenze) {
+  const p = [];
+  if (mancanti) p.push(mancanti === 1 ? 'manca 1 capo' : `mancano ${mancanti} capi`);
+  if (eccedenze) p.push(eccedenze === 1 ? '1 capo in eccedenza' : `${eccedenze} capi in eccedenza`);
+  return p.join(', ') || 'nessuna differenza di quantità';
+}
 export const meseCorrente = () => new Date().toISOString().slice(0, 7);
 export const oraIso = () => new Date().toISOString();
 

@@ -147,7 +147,7 @@ export const PannelloAdmin = {
         <li v-for="x in dati.diff" :key="x.o.id" @click="apriDiff(x.o)"><ic n="alert"/>
           <div class="grow"><b>n. {{ x.o.id }} · {{ nomeFornitore(x.o.fornitoreId) }}</b>
             <small v-if="x.disc">{{ x.disc }} articol{{ x.disc === 1 ? 'o' : 'i' }} con taglie diverse o eccedenze</small>
-            <small v-if="x.chiusura">chiuso con differenze: mancano {{ x.chiusura.mancanti }}, eccedenze {{ x.chiusura.eccedenze }}</small></div></li>
+            <small v-if="x.chiusura">chiuso con differenze: {{ $diff(x.chiusura.mancanti, x.chiusura.eccedenze) }}</small></div></li>
       </ul>
     </section>
     <section class="card">
@@ -341,7 +341,7 @@ export const Pacchetto = {
     <div v-if="!prezzi" class="banner neutro"><ic n="lock"/> Vista filtrata: senza prezzi d'acquisto, sconti e condizioni di pagamento.</div>
     <div v-if="ordine?.chiusura?.conDifferenze" class="banner avviso"><ic n="alert"/>
       <span>Chiuso con differenze da {{ RUOLI[ordine.chiusura.ruolo]?.nome }} il {{ dataOra(ordine.chiusura.data) }}:
-        mancano {{ ordine.chiusura.mancanti }} capi, eccedenze {{ ordine.chiusura.eccedenze }}.<template v-if="ordine.chiusura.nota"> «{{ ordine.chiusura.nota }}»</template></span></div>
+        {{ $diff(ordine.chiusura.mancanti, ordine.chiusura.eccedenze) }}.<template v-if="ordine.chiusura.nota"> «{{ ordine.chiusura.nota }}»</template></span></div>
 
     <section class="card">
       <div class="kv">
@@ -404,7 +404,7 @@ export const Pacchetto = {
     <visore v-if="visore" :foto-ids="visore.ids" :indice="visore.i" @chiudi="visore = null"/>
 
     <sheet v-if="chiudi" titolo="Chiudi l'ordine con differenze" @chiudi="chiudi = false">
-      <p>L'ordine risulta ancora <b>parziale</b>: mancano <b>{{ diff.mancanti }}</b> capi<template v-if="diff.eccedenze">, eccedenze <b>{{ diff.eccedenze }}</b></template>.
+      <p>L'ordine risulta ancora <b>parziale</b>: {{ $diff(diff.mancanti, diff.eccedenze) }}.
         Chiudendolo non si attendono altre consegne.</p>
       <label class="largo">Motivo (es. il fornitore non consegnerà i capi mancanti)<textarea class="inp" rows="3" v-model="notaChiusura"></textarea></label>
       <label class="check"><input type="checkbox" v-model="conferma"> Chiudo l'ordine nonostante le differenze e me ne assumo la responsabilità</label>
@@ -631,7 +631,7 @@ export const Distinta = {
   template: `<div class="pagina" v-if="!mancante">
     <page-head :titolo="'Distinta ' + d.tipo" :sotto="'Ordine n. ' + d.ordineId + ' · ' + nomeFornitore(o?.fornitoreId)" :indietro="ritorno"/>
     <div v-if="o?.chiusura?.conDifferenze" class="banner avviso"><ic n="alert"/>
-      <span>Ordine chiuso con differenze da {{ RUOLI[o.chiusura.ruolo]?.nome }}: mancano {{ o.chiusura.mancanti }} capi, eccedenze {{ o.chiusura.eccedenze }}.<template v-if="o.chiusura.nota"> «{{ o.chiusura.nota }}»</template></span></div>
+      <span>Ordine chiuso con differenze da {{ RUOLI[o.chiusura.ruolo]?.nome }}: {{ $diff(o.chiusura.mancanti, o.chiusura.eccedenze) }}.<template v-if="o.chiusura.nota"> «{{ o.chiusura.nota }}»</template></span></div>
     <section class="card">
       <div class="kv">
         <div><span>Data</span><b>{{ dataOra(d.data) }}</b></div>

@@ -324,8 +324,8 @@ export const Ordine = {
       <span v-else-if="o.storico">Ordine dello storico (sola lettura).</span>
       <span v-else>Ordine trasmesso: sola lettura.</span></div>
     <div v-if="o.chiusura?.conDifferenze" class="banner avviso"><ic n="alert"/>
-      <span>Chiuso con differenze da {{ RUOLI[o.chiusura.ruolo]?.nome }} il {{ dataOra(o.chiusura.data) }}: mancano {{ o.chiusura.mancanti }} capi,
-        eccedenze {{ o.chiusura.eccedenze }}.<template v-if="o.chiusura.nota"> «{{ o.chiusura.nota }}»</template></span></div>
+      <span>Chiuso con differenze da {{ RUOLI[o.chiusura.ruolo]?.nome }} il {{ dataOra(o.chiusura.data) }}:
+        {{ $diff(o.chiusura.mancanti, o.chiusura.eccedenze) }}.<template v-if="o.chiusura.nota"> «{{ o.chiusura.nota }}»</template></span></div>
 
     <section class="card">
       <div class="card-h"><h2>Testata</h2><small class="muted">inserito il {{ data(o.data) }}</small></div>
@@ -588,7 +588,7 @@ export const Articolo = {
       <div class="card-h"><h2><ic n="alert" :s="16"/> Già in {{ stagioneNome(sovrapp.sk) }}</h2>
         <a class="link" :href="linkRicerca">Vedi <ic n="next" :s="14"/></a></div>
       <p v-if="sovrapp.capi"><b>{{ num(sovrapp.capi) }} capi</b> di {{ sovrapp.cat.toLowerCase() }} da <b>{{ sovrapp.forn }} fornitor{{ sovrapp.forn === 1 ? 'e' : 'i' }}</b>
-        <template v-if="sovrapp.col">, di cui {{ num(sovrapp.capiCol) }} {{ sovrapp.col.toLowerCase() }} da {{ sovrapp.fornCol }}</template>.</p>
+        <template v-if="sovrapp.col && sovrapp.capiCol">, di cui {{ num(sovrapp.capiCol) }} {{ sovrapp.col.toLowerCase() }} da {{ sovrapp.fornCol }}</template><template v-else-if="sovrapp.col">, nessuno {{ sovrapp.col.toLowerCase() }}</template>.</p>
       <p v-else>Nessun altro capo di {{ sovrapp.cat.toLowerCase() }} in questa stagione.</p>
       <small class="muted">{{ stagioneNome(sovrapp.prec) }}: {{ num(sovrapp.capiPrec) }} capi di {{ sovrapp.cat.toLowerCase() }}</small>
     </section>

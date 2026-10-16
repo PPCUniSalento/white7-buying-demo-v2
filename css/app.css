@@ -495,4 +495,5 @@ label.parita small { color: var(--muted); font-weight: 400; }
   .pagina.con-barra.layout-ordine { padding-bottom: 0; }
   .layout-ordine .form { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
   .layout-ordine .form .largo { grid-column: 1 / -1; }
+  .barra-tot { width: min(1180px, 100%); }
 }

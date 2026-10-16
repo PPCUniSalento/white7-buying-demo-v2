@@ -1,7 +1,7 @@
 // Avvio, router a hash, barra dei ruoli e navigazione.
 
 import { state, carica, importaSeed, nonLetti, scriviLocale } from './db.js';
-import { RUOLI } from './util.js';
+import { RUOLI, testoDifferenze } from './util.js';
 import { registraComuni, toast } from './comp.js';
 import { PannelloBuyer, Ordini, Ordine, Articolo, Trasmissione } from './views-buyer.js';
 import { PannelloAdmin, PannelloNegozio, Arrivi, Pacchetto, Ricezione, Distinte, Distinta } from './views-arrivi.js';
@@ -122,6 +122,7 @@ async function avvia() {
   const app = createApp(App);
   registraComuni(app);
   app.config.globalProperties.$vai = (h) => { location.hash = h; };
+  app.config.globalProperties.$diff = testoDifferenze;
   app.config.errorHandler = (err) => {
     console.error(err);
     toast('Errore: ' + (err && err.message ? err.message : err), 'err');
