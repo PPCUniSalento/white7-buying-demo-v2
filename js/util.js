@@ -12,7 +12,11 @@ export const RUOLI = {
   amministrazione: { nome: 'Amministrazione', breve: 'Ammin.', colore: '#6a3fb0', prezzi: true },
   logistica: { nome: 'Logistica', breve: 'Logistica', colore: '#a55a12', prezzi: false },
   puntovendita: { nome: 'Punto vendita', breve: 'Negozio', colore: '#15705a', prezzi: false },
+  // chi configura il negozio: classificazione, taglie, liste e regole (non riceve ordini)
+  config: { nome: 'Configurazione', breve: 'Config.', colore: '#4a5562', prezzi: false },
 };
+// ruoli che possono ricevere un ordine trasmesso
+export const DESTINATARI = ['amministrazione', 'logistica', 'puntovendita'];
 
 export const STATI = {
   bozza: { nome: 'Bozza', classe: 'st-bozza' },
@@ -22,6 +26,8 @@ export const STATI = {
   chiuso: { nome: 'Chiuso', classe: 'st-chiuso' },
 };
 
+// Generi e motivi di segnalazione: valori iniziali, poi li sostituisce la configurazione
+// (db.js applicaConfigurazione aggiorna questi oggetti senza cambiarne il riferimento)
 export const GENERI = { U: 'Uomo', D: 'Donna', X: 'Unisex' };
 
 export const PROBLEMI = ['Mancante', 'Difettoso', 'Non conforme al campione', 'Taglia errata', 'Colore errato', 'Altro'];
@@ -30,8 +36,6 @@ export const stagioneKey = (anno, s) => `${anno}${s}`;
 // L'anno è quello di fine stagione: A/I 2026 = autunno 2025 – inverno 2026, quindi A/I precede P/E
 export const stagioneOrd = (k) => parseInt(k.slice(0, 4), 10) * 10 + (k.endsWith('I') ? 1 : 2);
 export const stagioneSucc = (k) => (k.endsWith('I') ? `${k.slice(0, 4)}E` : `${parseInt(k.slice(0, 4), 10) + 1}I`);
-// Periodo di consegna proposto: P/E gen–mar dell'anno; A/I lug–set dell'anno precedente
-export const consegnaStagione = (anno, s) => (s === 'E' ? [`${anno}-01`, `${anno}-03`] : [`${anno - 1}-07`, `${anno - 1}-09`]);
 export const stagioneNome = (k) => (k ? `${k.endsWith('I') ? 'A/I' : 'P/E'} ${k.slice(0, 4)}` : '');
 export const stagionePrec = (k) => `${parseInt(k.slice(0, 4), 10) - 1}${k.slice(4)}`;
 
@@ -56,12 +60,53 @@ export function dataOra(iso) {
   const d = new Date(iso);
   return d.toLocaleString('it-IT', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
-const MESI = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
+export const MESI = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
 export function mese(ym) {
   if (!ym) return '';
   const [y, m] = ym.split('-');
   return `${MESI[parseInt(m, 10) - 1]} ${y}`;
 }
+
+// ---------- date di consegna (AAAA-MM-GG; giorno 1, 15, fine mese… secondo la configurazione) ----------
+const due = (n) => String(n).padStart(2, '0');
+export const ultimoGiorno = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+// giorno: numero oppure 'fine'
+export function dataDiConsegna(ym, giorno) {
+  const [y, m] = ym.split('-').map(Number);
+  const d = giorno === 'fine' ? ultimoGiorno(y, m) : Math.min(Number(giorno) || 1, ultimoGiorno(y, m));
+  return `${ym}-${due(d)}`;
+}
+// Le date salvate solo come mese (prima versione) diventano il primo o l'ultimo giorno del mese
+export function normConsegna(v, fine) {
+  if (!v || !/^\d{4}-\d{2}$/.test(v)) return v;
+  return dataDiConsegna(v, fine ? 'fine' : 1);
+}
+export function giornoDiConsegna(iso) {
+  if (!iso || iso.length < 10) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  return d === ultimoGiorno(y, m) ? 'fine' : String(d);
+}
+// "15 lug 2025", "fine lug 2025"
+export function dataConsegna(iso) {
+  if (!iso) return '';
+  if (iso.length === 7) return mese(iso);
+  const [y, m, d] = iso.split('-').map(Number);
+  return `${d === ultimoGiorno(y, m) ? 'fine' : d} ${MESI[m - 1]} ${y}`;
+}
+export const nomeGiorno = (g) => (g === 'fine' ? 'fine mese' : `giorno ${g}`);
+export const oggi = () => { const d = new Date(); return `${d.getFullYear()}-${due(d.getMonth() + 1)}-${due(d.getDate())}`; };
+export function piuGiorni(iso, n) {
+  const d = new Date(`${iso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + (Number(n) || 0));
+  return d.toISOString().slice(0, 10);
+}
+// Mese relativo a gennaio dell'anno della stagione (−6 = luglio dell'anno prima)
+export function meseRelativo(anno, offset) {
+  const y = anno + Math.floor(offset / 12), m = ((offset % 12) + 12) % 12 + 1;
+  return `${y}-${due(m)}`;
+}
+export const nomeMeseRelativo = (offset) =>
+  `${MESI[((offset % 12) + 12) % 12]} ${offset < 0 ? 'anno prima' : offset >= 12 ? 'anno dopo' : 'anno stagione'}`;
 // "manca 1 capo, 2 capi in eccedenza" (usata nei testi sulle differenze di consegna)
 export function testoDifferenze(mancanti, eccedenze) {
   const p = [];
@@ -75,10 +120,12 @@ export const oraIso = () => new Date().toISOString();
 // Totale riga: prezzo × quantità al netto dello sconto di riga (%)
 export const totaleRiga = (r) => (r.prezzo || 0) * (r.qta || 0) * (1 - (r.sconto || 0) / 100);
 
-// Formato codice articolo: "CODICE+TESSUTO COLORE" (almeno due blocchi separati da spazio)
-export function controllaCodice(cod) {
+// Formato codice articolo: "CODICE+TESSUTO COLORE" (almeno due blocchi separati da spazio).
+// coloreInFondo = false (configurazione): basta che il codice ci sia
+export function controllaCodice(cod, coloreInFondo = true) {
   const c = (cod || '').trim();
   if (!c) return 'Codice articolo obbligatorio';
+  if (!coloreInFondo) return null;
   if (!/\s/.test(c)) return 'Formato: codice e tessuto uniti, poi uno spazio e il codice colore (es. UP563DS0369UMD7 999)';
   const [base, colore] = [c.slice(0, c.lastIndexOf(' ')).trim(), c.slice(c.lastIndexOf(' ') + 1)];
   if (base.length < 3) return 'Codice + tessuto troppo corto';

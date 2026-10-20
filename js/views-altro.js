@@ -1,7 +1,7 @@
 // Primo avvio, impostazioni, anagrafiche, registro modifiche.
 
 import { M, state, db, importaSeed, ripristina, salvaImpostazioni, stagioni, spazioOccupato, seedVersionePrecedente } from './db.js';
-import { RUOLI, GENERI, num, dataOra, stagioneNome, stagioneOrd, stagioneSucc } from './util.js';
+import { RUOLI, num, dataOra, stagioneNome, stagioneOrd, stagioneSucc } from './util.js';
 import { toast } from './comp.js';
 
 const { ref, computed, onMounted } = Vue;
@@ -108,7 +108,9 @@ export const Altro = {
     }
     const online = navigator.onLine;
     const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-    return { spazio, inp, lavoro, info, conteggi, elencoStagioni, salva, reset, altroArchivio, online, standalone, state, M, RUOLI, GENERI, num, dataOra, stagioneNome };
+    const generi = computed(() => state.cfg.generi.filter((g) => g.attivo !== false));
+    const aziende = computed(() => M.aziende.filter((a) => a.attivo !== false));
+    return { spazio, inp, lavoro, info, conteggi, elencoStagioni, salva, reset, altroArchivio, online, standalone, state, M, RUOLI, generi, aziende, num, dataOra, stagioneNome };
   },
   template: `<div class="pagina">
     <page-head titolo="Altro" :sotto="'Ruolo: ' + RUOLI[state.ruolo].nome"/>
@@ -117,15 +119,15 @@ export const Altro = {
       <div class="form">
         <label>Stagione di lavoro<select class="inp" v-model="state.imp.stagioneLavoro" @change="salva">
           <option v-for="s in elencoStagioni" :value="s">{{ stagioneNome(s) }}</option></select></label>
-        <label>Foto minime per articolo (0 = facoltative)<input class="inp" type="number" min="0" max="10" v-model.number="state.imp.minFoto" @change="salva"></label>
         <label>Genere predefinito<select class="inp" v-model="state.imp.genereDefault" @change="salva">
-          <option v-for="(g, k) in GENERI" :value="k">{{ g }}</option></select></label>
+          <option v-for="g in generi" :value="g.k">{{ g.nome }}</option></select></label>
         <label>Società predefinita<select class="inp" v-model.number="state.imp.aziendaDefault" @change="salva">
-          <option v-for="a in M.aziende" :value="a.id">{{ a.nome }}</option></select></label>
+          <option v-for="a in aziende" :value="a.id">{{ a.nome }}</option></select></label>
       </div>
+      <p class="muted">Foto minime, campi obbligatori e le altre regole del negozio si impostano dal ruolo <b>Configurazione</b>.</p>
     </section>
     <section class="card">
-      <div class="card-h"><h2>Anagrafiche</h2></div>
+      <div class="card-h"><h2>Anagrafiche</h2><small class="muted">si modificano dal ruolo Configurazione</small></div>
       <div class="menu-azioni">
         <a href="#/anagrafica/aziende"><ic n="list"/> Società <small>{{ M.aziende.length }}</small></a>
         <a href="#/anagrafica/fornitori"><ic n="list"/> Fornitori <small>{{ M.fornitori.length }}</small></a>
@@ -184,7 +186,7 @@ export const Anagrafica = {
     return { q, limite, nOrdini, fornitori, macro, nomiGriglie, catDiGriglia, M, titolo: TITOLI[p.tipo] || 'Anagrafica', num };
   },
   template: `<div class="pagina">
-    <page-head :titolo="titolo" sotto="Sola consultazione nella demo" indietro="#/altro"/>
+    <page-head :titolo="titolo" sotto="Consultazione · si modificano dal ruolo Configurazione" indietro="#/altro"/>
     <template v-if="tipo === 'fornitori'">
       <input class="inp" v-model="q" type="search" placeholder="Cerca fornitore">
       <ul class="lista"><li v-for="f in fornitori.slice(0, limite)" :key="f.id"><div class="grow"><b>{{ f.nome }}</b><small>codice {{ f.cod }}</small></div>

@@ -1,7 +1,10 @@
 // Dati: IndexedDB (Dexie) come archivio, copia in memoria (M) per ricerche e report.
 // Tutte le scritture passano da qui: aggiornano IndexedDB, M e state.rev.
 
-import { APP, RUOLI, SENZA_TAGLIA, stagioneKey, stagioneOrd, stagioneSucc, consegnaStagione, oraIso, controllaCodice, totaleRiga } from './util.js';
+import {
+  APP, RUOLI, GENERI, PROBLEMI, SENZA_TAGLIA, stagioneKey, stagioneOrd, stagioneSucc, oraIso, controllaCodice, totaleRiga,
+  dataDiConsegna, normConsegna, meseRelativo, dataConsegna, piuGiorni, oggi,
+} from './util.js';
 
 const { reactive } = Vue;
 
@@ -19,8 +22,48 @@ const SCHEMA_V1 = {
 export const db = new Dexie(APP.db);
 db.version(1).stores({ ...SCHEMA_V1, budget: 'k' });
 
-// Foto facoltative (decisione del 15/10/2026): il minimo è un'impostazione, 0 di default
-const IMP_DEFAULT = { stagioneLavoro: null, minFoto: 0, genereDefault: 'U', aziendaDefault: 5 };
+// Preferenze di chi usa il dispositivo (le regole del negozio sono nella configurazione)
+const IMP_DEFAULT = { stagioneLavoro: null, genereDefault: 'U', aziendaDefault: 5 };
+
+// ---------- configurazione del negozio (ruolo Configurazione, richiesta del 20/10/2026) ----------
+// Campi che la configurazione può rendere obbligatori. Fornitore, stagione, codice articolo
+// e quantità restano sempre obbligatori: senza, trasmissione, ricezione e analisi non funzionano.
+export const CAMPI_OBBLIGATORI = {
+  testata: [['aziendaId', 'Società'], ['pagamento', 'Condizioni di pagamento'], ['consegna', 'Periodo di consegna']],
+  articolo: [['macroId', 'Categoria'], ['catId', 'Sottocategoria'], ['coloreId', 'Colore'], ['genere', 'Genere'], ['prezzo', 'Prezzo'],
+    ['grigliaId', 'Griglia taglie'], ['descrizione', 'Descrizione commerciale'], ['composizione', 'Composizione']],
+};
+export const CAMPI_FISSI = { testata: ['Fornitore', 'Stagione'], articolo: ['Codice articolo', 'Quantità'] };
+// campi che finiscono sul cartellino e nel gestionale (limite di caratteri sulla somma)
+export const CAMPI_CARTELLINO = [['descrizione', 'Descrizione'], ['composizione', 'Composizione'], ['note', 'Note'], ['dettagli', 'Dettagli'], ['misure', 'Misure']];
+
+// Valori iniziali: le decisioni del 15/10/2026 (foto facoltative, colore in fondo al codice) e del 20/10/2026
+// (consegne al giorno 1, 15 o a fine mese; avviso oltre 150 caratteri di descrizione, composizione e note)
+export const CFG_DEFAULT = () => ({
+  obbligatori: {
+    aziendaId: true, pagamento: false, consegna: false,
+    macroId: true, catId: true, coloreId: false, genere: true, prezzo: true, grigliaId: false, descrizione: false, composizione: false,
+  },
+  minFoto: 0,
+  coloreInCodice: true,
+  cartellino: { limite: 150, campi: ['descrizione', 'composizione', 'note'] },
+  // giorni ammessi; periodo proposto per stagione in mesi relativi a gennaio dell'anno della stagione
+  consegne: { giorni: [1, 15, 'fine'], I: { da: -6, a: -4 }, E: { da: 0, a: 2 } },
+  ritardoGiorni: 0,
+  sovrappFornitori: 3,
+  generi: [{ k: 'U', nome: 'Uomo' }, { k: 'D', nome: 'Donna' }, { k: 'X', nome: 'Unisex' }],
+  problemi: ['Mancante', 'Difettoso', 'Non conforme al campione', 'Taglia errata', 'Colore errato', 'Altro'],
+});
+function unisciCfg(v) {
+  const d = CFG_DEFAULT();
+  if (!v) return d;
+  return {
+    ...d, ...v,
+    obbligatori: { ...d.obbligatori, ...v.obbligatori },
+    cartellino: { ...d.cartellino, ...v.cartellino },
+    consegne: { ...d.consegne, ...v.consegne },
+  };
+}
 
 export const state = reactive({
   pronto: false,
@@ -28,6 +71,7 @@ export const state = reactive({
   rev: 0,
   ruolo: leggiLocale('ruolo') || 'buyer',
   imp: { ...IMP_DEFAULT },
+  cfg: CFG_DEFAULT(),
   toast: null,
 });
 
@@ -91,6 +135,12 @@ export async function carica() {
   const imp = await db.meta.get('impostazioni');
   state.imp = { ...IMP_DEFAULT, ...(imp ? imp.v : {}) };
   if (!state.imp.stagioneLavoro) state.imp.stagioneLavoro = stagioni()[0] || null;
+  const cfg = await db.meta.get('configurazione');
+  state.cfg = unisciCfg(cfg?.v);
+  // il minimo di foto era un'impostazione del dispositivo: passa alla configurazione
+  if (!cfg && imp?.v?.minFoto > 0) state.cfg.minFoto = imp.v.minFoto;
+  applicaConfigurazione();
+  await adegua();
   state.haDati = M.ord.size > 0 || M.fornitori.length > 0;
   state.pronto = true;
   tocca();
@@ -162,6 +212,116 @@ export async function ripristina() {
 export async function salvaImpostazioni() {
   await db.meta.put({ k: 'impostazioni', v: { ...state.imp } });
   tocca();
+}
+
+// Adeguamenti dell'archivio alle richieste del cliente, applicati una sola volta per archivio
+// (anche a quello della v1 riusato al primo avvio)
+const ADEGUAMENTI = {
+  // taglie italiane fino alla 64 (20/10/2026)
+  async griglia64() {
+    const g = M.griglie.find((x) => x.nome === 'Italiana 44–60' && x.taglie[x.taglie.length - 1] === '60');
+    if (!g) return;
+    g.taglie.push('62', '64');
+    g.nome = 'Italiana 44–64';
+    await db.anag.put({ k: 'griglie', v: M.griglie });
+  },
+  // "Nessuna" e "Conto vendita" fra le condizioni di pagamento suggerite
+  async pagamenti() {
+    const a = M.pagamenti.filter(Boolean);
+    for (const p of ['Conto vendita', 'Nessuna']) if (!a.includes(p)) a.push(p);
+    M.pagamenti = a;
+    await db.anag.put({ k: 'pagamenti', v: a });
+  },
+  // consegna al giorno: le date salvate come mese diventano primo e ultimo giorno del mese
+  async consegnaGiorno() {
+    const cambiati = [];
+    for (const o of M.ord.values()) {
+      const da = normConsegna(o.consegnaDa, false), a = normConsegna(o.consegnaA, true);
+      if (da !== o.consegnaDa || a !== o.consegnaA) { o.consegnaDa = da; o.consegnaA = a; cambiati.push(o); }
+    }
+    if (cambiati.length) await db.ordini.bulkPut(cambiati);
+  },
+};
+async function adegua() {
+  const fatti = new Set((await db.meta.get('adeguamenti'))?.v || []);
+  const da = Object.keys(ADEGUAMENTI).filter((k) => !fatti.has(k));
+  if (!da.length) return;
+  for (const k of da) { await ADEGUAMENTI[k](); fatti.add(k); }
+  indicizzaAnagrafiche();
+  await db.meta.put({ k: 'adeguamenti', v: [...fatti] });
+}
+
+// Generi e motivi di segnalazione della configurazione negli oggetti condivisi di util.js
+function applicaConfigurazione() {
+  for (const k of Object.keys(GENERI)) delete GENERI[k];
+  for (const g of state.cfg.generi) GENERI[g.k] = g.nome;
+  PROBLEMI.splice(0, PROBLEMI.length, ...state.cfg.problemi);
+}
+
+export async function salvaConfigurazione(nuova, dettagli = '') {
+  state.cfg = unisciCfg(JSON.parse(JSON.stringify(nuova)));
+  await db.meta.put({ k: 'configurazione', v: JSON.parse(JSON.stringify(state.cfg)) });
+  applicaConfigurazione();
+  if (dettagli) await logga('Modificata la configurazione', 'configurazione', null, dettagli);
+  tocca();
+}
+
+// Anagrafiche modificabili dal ruolo Configurazione (e fornitori anche dal buyer)
+export async function salvaAnagrafica(k, v, dettagli = '') {
+  M[k] = JSON.parse(JSON.stringify(v));
+  await db.anag.put({ k, v: M[k] });
+  indicizzaAnagrafiche();
+  if (dettagli) await logga('Modificata la configurazione', 'configurazione', null, dettagli);
+  tocca();
+}
+export const nuovoId = (a) => a.reduce((m, x) => Math.max(m, Number(x.id) || 0), 0) + 1;
+// voce attiva: i fornitori usano "valido", le altre anagrafiche "attivo"
+export const attivo = (x) => !!x && x.attivo !== false && x.valido !== false;
+
+export async function nuovoFornitore(nome, cod = '') {
+  const f = { id: nuovoId(M.fornitori), cod: cod.trim(), nome: nome.trim(), nuovo: true, creato: oraIso() };
+  await salvaAnagrafica('fornitori', [...M.fornitori, f]);
+  await logga('Nuovo fornitore', 'fornitore', f.id, f.nome);
+  return f;
+}
+// Fornitori con un nome simile (per evitare doppioni scritti in modo diverso)
+const normNome = (s) => (s || '').toLowerCase().replace(/\b(s\.?r\.?l|s\.?p\.?a|s\.?n\.?c|s\.?a\.?s|ltd|inc|gmbh|srls)\b\.?/g, '').replace(/[^a-z0-9]/g, '');
+export function fornitoriSimili(nome) {
+  const n = normNome(nome);
+  if (n.length < 3) return [];
+  return M.fornitori.filter((f) => {
+    const x = normNome(f.nome);
+    return x === n || (Math.min(x.length, n.length) >= 4 && (x.includes(n) || n.includes(x)));
+  }).slice(0, 6);
+}
+
+// Una sottocategoria spostata in un'altra categoria porta con sé i suoi articoli
+export async function spostaArticoliCategoria(catId, macroId) {
+  const righe = [...M.rig.values()].filter((r) => r.catId === catId && r.macroId !== macroId);
+  for (const r of righe) r.macroId = macroId;
+  if (righe.length) await db.righe.bulkPut(righe);
+  tocca();
+  return righe.length;
+}
+
+// Consegne: periodo proposto per la stagione e ritardi, secondo la configurazione
+export function giorniConsegna() {
+  const g = state.cfg.consegne.giorni.filter((x) => x !== 'fine').map(Number).sort((a, b) => a - b);
+  return state.cfg.consegne.giorni.includes('fine') ? [...g, 'fine'] : g;
+}
+export function consegnaProposta(anno, s) {
+  const c = state.cfg.consegne[s] || CFG_DEFAULT().consegne[s];
+  const g = giorniConsegna();
+  return [dataDiConsegna(meseRelativo(anno, c.da), g[0] ?? 1), dataDiConsegna(meseRelativo(anno, c.a), g[g.length - 1] ?? 'fine')];
+}
+export const inRitardo = (consegnaA) => !!consegnaA && piuGiorni(normConsegna(consegnaA, true), state.cfg.ritardoGiorni) < oggi();
+
+// Testo del cartellino: somma dei caratteri dei campi configurati (avviso, non blocca)
+export const lunghezzaCartellino = (r) => state.cfg.cartellino.campi.reduce((s, k) => s + (r[k] || '').trim().length, 0);
+export function oltreCartellino(r) {
+  const lim = state.cfg.cartellino.limite;
+  const n = lunghezzaCartellino(r);
+  return lim > 0 && n > lim ? n : 0;
 }
 
 // ---------- letture ----------
@@ -296,6 +456,7 @@ function valoreLeggibile(k, v) {
     case 'continuativo': return v ? 'sì' : 'no';
     case 'vecchiCodici': return v.join(', ') || '–';
     case 'taglie': return Object.entries(v).filter(([, q]) => q).map(([t, q]) => `${t}:${q}`).join(' ') || '–';
+    case 'consegnaDa': case 'consegnaA': return dataConsegna(v);
     default: return String(v);
   }
 }
@@ -321,7 +482,7 @@ export async function salvaOrdine(o) {
 export async function nuovoOrdine() {
   const sk = state.imp.stagioneLavoro || stagioni()[0];
   const anno = parseInt(sk.slice(0, 4), 10), stag = sk.slice(4);
-  const [consegnaDa, consegnaA] = consegnaStagione(anno, stag);
+  const [consegnaDa, consegnaA] = consegnaProposta(anno, stag);
   const o = await salvaOrdine({
     aziendaId: state.imp.aziendaDefault, fornitoreId: null, data: oraIso(), anno, stagione: stag,
     stato: 'bozza', pagamento: null,
@@ -395,30 +556,40 @@ export async function riordinaFoto(rigaId, ids) {
   tocca();
 }
 
-// Controlli bloccanti prima della conferma dell'ordine (decisi con il cliente il 15/10/2026):
-// testata: società, stagione, fornitore; articolo: codice (colore in fondo dopo uno spazio),
-// categoria, sottocategoria, genere, prezzo, quantità. Colore, foto, pagamento, consegna e sconti
-// sono facoltativi.
+// Controlli bloccanti prima della conferma dell'ordine. Sempre: stagione, fornitore, codice, quantità;
+// gli altri campi secondo la configurazione (valori iniziali decisi con il cliente il 15/10/2026:
+// società, categoria, sottocategoria, genere, prezzo; colore in fondo al codice).
+export const obbligatorio = (k) => !!state.cfg.obbligatori[k];
+const vuoto = (v) => !(v || '').trim();
 export function erroriRiga(r) {
   const e = [];
-  const ec = controllaCodice(r.codArt);
+  const ec = controllaCodice(r.codArt, state.cfg.coloreInCodice);
   if (ec) e.push(ec);
-  if (!r.macroId) e.push('Categoria obbligatoria');
-  if (!r.catId) e.push('Sottocategoria obbligatoria');
-  if (!r.genere) e.push('Genere obbligatorio');
-  if (!(r.prezzo > 0)) e.push('Prezzo obbligatorio');
+  if (obbligatorio('macroId') && !r.macroId) e.push('Categoria obbligatoria');
+  if (obbligatorio('catId') && !r.catId) e.push('Sottocategoria obbligatoria');
+  if (obbligatorio('coloreId') && !r.coloreId) e.push('Colore obbligatorio');
+  if (obbligatorio('genere') && !r.genere) e.push('Genere obbligatorio');
+  if (obbligatorio('prezzo') && !(r.prezzo > 0)) e.push('Prezzo obbligatorio');
   if (!(r.qta > 0)) e.push('Quantità obbligatoria');
-  if (state.imp.minFoto > 0) {
+  // la griglia si chiede solo se la sottocategoria ne propone almeno una
+  if (obbligatorio('grigliaId') && !r.grigliaId && (M.cat.get(r.catId)?.griglie || []).some((id) => attivo(M.gri.get(id)))) {
+    e.push('Griglia taglie obbligatoria');
+  }
+  if (obbligatorio('descrizione') && vuoto(r.descrizione)) e.push('Descrizione obbligatoria');
+  if (obbligatorio('composizione') && vuoto(r.composizione)) e.push('Composizione obbligatoria');
+  if (state.cfg.minFoto > 0) {
     const nf = fotoRiga(r.id).length;
-    if (nf < state.imp.minFoto) e.push(`Foto: ${nf} su ${state.imp.minFoto} minime`);
+    if (nf < state.cfg.minFoto) e.push(`Foto: ${nf} su ${state.cfg.minFoto} minime`);
   }
   return e;
 }
 export function erroriOrdine(o) {
   const e = [];
-  if (!o.aziendaId) e.push('Società obbligatoria');
+  if (obbligatorio('aziendaId') && !o.aziendaId) e.push('Società obbligatoria');
   if (!o.anno || !o.stagione) e.push('Stagione obbligatoria');
   if (!o.fornitoreId) e.push('Fornitore obbligatorio');
+  if (obbligatorio('pagamento') && vuoto(o.pagamento)) e.push('Condizioni di pagamento obbligatorie (anche «Nessuna»)');
+  if (obbligatorio('consegna') && (!o.consegnaDa || !o.consegnaA)) e.push('Periodo di consegna obbligatorio');
   if (o.consegnaDa && o.consegnaA && o.consegnaA < o.consegnaDa) e.push('Periodo di consegna non valido');
   const righe = righeOrdine(o.id);
   if (!righe.length) e.push('Nessun articolo inserito');
@@ -427,6 +598,13 @@ export function erroriOrdine(o) {
     if (er.length) e.push(`${r.codArt || '(articolo senza codice)'}: ${er.join('; ')}`);
   }
   return e;
+}
+
+// Avvisi che non bloccano la conferma (testo del cartellino troppo lungo)
+export function avvisiOrdine(o) {
+  const lim = state.cfg.cartellino.limite;
+  return righeOrdine(o.id).filter((r) => oltreCartellino(r))
+    .map((r) => `${r.codArt || '(articolo senza codice)'}: testo del cartellino di ${lunghezzaCartellino(r)} caratteri (limite ${lim})`);
 }
 
 export async function cambiaStato(id, stato, nota = '') {

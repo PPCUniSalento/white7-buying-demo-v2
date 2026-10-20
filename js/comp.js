@@ -1,7 +1,7 @@
 // Componenti condivisi.
 
-import { M, state, fotoRiga, fotoPrincipale, aggiungiFoto, eliminaFoto, riordinaFoto, riepilogo } from './db.js';
-import { STATI, euro, num, perc, urlBlob, elaboraFoto } from './util.js';
+import { M, state, fotoRiga, fotoPrincipale, aggiungiFoto, eliminaFoto, riordinaFoto, riepilogo, attivo, nuovoFornitore, fornitoriSimili, giorniConsegna } from './db.js';
+import { STATI, euro, num, perc, urlBlob, elaboraFoto, dataDiConsegna, giornoDiConsegna, nomeGiorno } from './util.js';
 
 const { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } = Vue;
 
@@ -35,6 +35,10 @@ const P = {
   lock: 'M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4',
   gallery: 'M4 4h12v12H4zM20 8v12H8M8 12l2-2 3 3',
   aperture: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
+  grid: 'M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z',
+  sliders: 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6',
+  upload: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12',
+  tag: 'M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L2 12V2h10l8.6 8.6a2 2 0 0 1 0 2.8zM7 7h.01',
 };
 
 export const Ic = {
@@ -83,12 +87,14 @@ export const PageHead = {
     <div class="ph-a"><slot/></div></div>`,
 };
 
-// Scelta del fornitore fra ~900 voci: ricerca testuale, i più usati in cima
+// Scelta del fornitore fra ~900 voci: ricerca testuale, i più usati in cima.
+// "Nuovo fornitore" lo aggiunge all'anagrafica (richiesta del 20/10/2026), con un avviso sui nomi simili.
 export const FornitorePicker = {
-  props: { modelValue: Number, disabled: Boolean },
+  props: { modelValue: Number, disabled: Boolean, nuovo: { type: Boolean, default: true } },
   emits: ['update:modelValue'],
   setup(p, { emit }) {
     const aperto = ref(false), q = ref('');
+    const crea = ref(null);
     const conteggio = computed(() => {
       state.rev;
       const m = new Map();
@@ -97,25 +103,55 @@ export const FornitorePicker = {
     });
     const elenco = computed(() => {
       const t = q.value.trim().toLowerCase();
-      let a = M.fornitori.filter((f) => f.valido !== false);
+      let a = M.fornitori.filter((f) => attivo(f) || f.id === p.modelValue);
       if (t) a = a.filter((f) => f.nome.toLowerCase().includes(t) || (f.cod || '').toLowerCase() === t);
       a = [...a].sort((x, y) => (conteggio.value.get(y.id) || 0) - (conteggio.value.get(x.id) || 0) || x.nome.localeCompare(y.nome));
       return a.slice(0, 80);
     });
     const nome = computed(() => (p.modelValue ? M.forn.get(p.modelValue)?.nome : ''));
-    const scegli = (f) => { emit('update:modelValue', f.id); aperto.value = false; q.value = ''; };
-    return { aperto, q, elenco, nome, scegli, conteggio };
+    const scegli = (f) => { emit('update:modelValue', f.id); aperto.value = false; q.value = ''; crea.value = null; };
+    const simili = computed(() => (crea.value ? fornitoriSimili(crea.value.nome) : []));
+    const apriCrea = () => { crea.value = { nome: q.value.trim(), cod: '' }; };
+    async function aggiungi() {
+      const n = crea.value.nome.trim();
+      if (!n) return;
+      if (M.fornitori.some((f) => f.nome.trim().toLowerCase() === n.toLowerCase())) {
+        toast('Esiste già un fornitore con questo nome', 'err');
+        return;
+      }
+      const f = await nuovoFornitore(n, crea.value.cod);
+      toast(`Fornitore «${f.nome}» aggiunto`);
+      scegli(f);
+    }
+    return { aperto, q, elenco, nome, scegli, conteggio, crea, simili, apriCrea, aggiungi };
   },
   template: `<div>
     <button type="button" class="campo-btn" :class="{vuoto: !nome}" :disabled="disabled" @click="aperto = true">
       <span>{{ nome || 'Seleziona fornitore…' }}</span><ic n="down" :s="18"/></button>
-    <sheet v-if="aperto" titolo="Fornitore" alto @chiudi="aperto = false">
-      <input class="inp" v-model="q" placeholder="Cerca per nome o codice" autofocus>
+    <sheet v-if="aperto" :titolo="crea ? 'Nuovo fornitore' : 'Fornitore'" alto @chiudi="aperto = false; crea = null">
+      <template v-if="crea">
+        <div class="form">
+          <label class="largo">Nome *<input class="inp" v-model="crea.nome" autofocus></label>
+          <label class="largo">Codice (facoltativo)<input class="inp mono" v-model="crea.cod" placeholder="Codice del gestionale, se c'è già"></label>
+        </div>
+        <div v-if="simili.length" class="banner avviso col"><b>Ci sono già fornitori con un nome simile:</b>
+          <button v-for="f in simili" :key="f.id" class="link" @click="scegli(f)">{{ f.nome }}<template v-if="f.cod"> ({{ f.cod }})</template></button>
+          <span>Tocca un nome per sceglierlo invece di crearne uno nuovo.</span></div>
+        <div class="azioni-pagina"><button class="btn primario" :disabled="!crea.nome.trim()" @click="aggiungi"><ic n="plus"/> Aggiungi e scegli</button>
+          <button class="btn" @click="crea = null">Annulla</button></div>
+        <p class="muted">Il nuovo fornitore resta segnato come «nuovo» finché non riceve il codice del gestionale.</p>
+      </template>
+      <template v-else>
+      <div class="riga-inp"><input class="inp" v-model="q" placeholder="Cerca per nome o codice" autofocus>
+        <button v-if="nuovo" class="btn" @click="apriCrea"><ic n="plus"/> Nuovo</button></div>
+      <button v-if="nuovo && q.trim() && !elenco.some(f => f.nome.toLowerCase() === q.trim().toLowerCase())" class="btn pieno nuovo-forn" @click="apriCrea">
+        <ic n="plus"/> Aggiungi «{{ q.trim() }}» come nuovo fornitore</button>
       <ul class="lista-scelta">
         <li v-for="f in elenco" :key="f.id"><button @click="scegli(f)" :class="{on: f.id === modelValue}">
-          <span>{{ f.nome }}</span><small v-if="conteggio.get(f.id)">{{ conteggio.get(f.id) }} ordin{{ conteggio.get(f.id) === 1 ? 'e' : 'i' }}</small></button></li>
+          <span>{{ f.nome }}<i v-if="f.nuovo" class="tag-nuovo">nuovo</i></span><small v-if="conteggio.get(f.id)">{{ conteggio.get(f.id) }} ordin{{ conteggio.get(f.id) === 1 ? 'e' : 'i' }}</small></button></li>
         <li v-if="!elenco.length" class="muted pad">Nessun fornitore trovato</li>
       </ul>
+      </template>
     </sheet></div>`,
 };
 
@@ -185,7 +221,7 @@ export const FotoArticolo = {
     const inpCam = ref(null), inpGal = ref(null);
     const haMirino = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
     const foto = computed(() => { state.rev; return [...fotoRiga(p.rigaId)]; });
-    const min = computed(() => state.imp.minFoto);
+    const min = computed(() => state.cfg.minFoto);
     async function daFile(ev) {
       const files = [...(ev.target.files || [])];
       ev.target.value = '';
@@ -246,6 +282,33 @@ export const FotoArticolo = {
     </sheet></div>`,
 };
 
+// Data di consegna: mese + giorno fra quelli ammessi dalla configurazione (1, 15, fine mese…).
+// fine: se si sceglie solo il mese, propone l'ultimo giorno ammesso invece del primo.
+export const DataConsegna = {
+  props: { modelValue: String, disabled: Boolean, fine: Boolean },
+  emits: ['update:modelValue'],
+  setup(p, { emit }) {
+    const ym = computed(() => (p.modelValue || '').slice(0, 7));
+    const giorno = computed(() => giornoDiConsegna(p.modelValue));
+    const opzioni = computed(() => {
+      const g = giorniConsegna().map(String);
+      if (giorno.value && !g.includes(giorno.value)) g.push(giorno.value);
+      return g.sort((a, b) => (a === 'fine') - (b === 'fine') || Number(a) - Number(b));
+    });
+    function setMese(v) {
+      if (!v) { emit('update:modelValue', null); return; }
+      const g = giorno.value || (p.fine ? opzioni.value[opzioni.value.length - 1] : opzioni.value[0]) || 1;
+      emit('update:modelValue', dataDiConsegna(v, g));
+    }
+    const setGiorno = (g) => { if (ym.value) emit('update:modelValue', dataDiConsegna(ym.value, g)); };
+    return { ym, giorno, opzioni, setMese, setGiorno, nomeGiorno };
+  },
+  template: `<div class="data-cons">
+    <input class="inp" type="month" :value="ym" :disabled="disabled" @change="setMese($event.target.value)">
+    <select class="inp" :value="giorno" :disabled="disabled || !ym" @change="setGiorno($event.target.value)">
+      <option v-for="g in opzioni" :key="g" :value="g">{{ nomeGiorno(g) }}</option></select></div>`,
+};
+
 // Riepilogo ordine per categoria e sottocategoria
 export const Riepilogo = {
   props: { righe: Array, scontoExtra: Number, prezzi: { type: Boolean, default: true } },
@@ -276,7 +339,7 @@ export function toast(testo, tipo = 'ok') {
 }
 
 export function registraComuni(app) {
-  Object.entries({ Ic, Thumb, StatoBadge, Sheet, PageHead, FornitorePicker, Mirino, Visore, FotoArticolo, Riepilogo })
+  Object.entries({ Ic, Thumb, StatoBadge, Sheet, PageHead, FornitorePicker, DataConsegna, Mirino, Visore, FotoArticolo, Riepilogo })
     .forEach(([k, v]) => app.component(k, v));
 }
 

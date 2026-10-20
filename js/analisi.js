@@ -19,7 +19,7 @@ export function righeArricchite() {
 }
 
 export const FILTRI_VUOTI = () => ({
-  testo: '', stagione: '', aziendaId: '', fornitoreId: '', macroId: '', catId: '', coloreId: '',
+  testo: '', stagioni: [], aziendaId: '', fornitoreId: '', macroId: '', catId: '', coloreId: '',
   genere: '', prezzoMin: '', prezzoMax: '', statoOrdine: '', statoConsegna: '',
 });
 
@@ -28,7 +28,7 @@ export function cerca(f) {
   const num = (v) => (v === '' || v == null ? null : Number(v));
   const pMin = num(f.prezzoMin), pMax = num(f.prezzoMax);
   return righeArricchite().filter(({ r, o, sk }) => {
-    if (f.stagione && sk !== f.stagione) return false;
+    if (f.stagioni?.length && !f.stagioni.includes(sk)) return false;
     if (f.aziendaId && o.aziendaId !== +f.aziendaId) return false;
     if (f.fornitoreId && o.fornitoreId !== +f.fornitoreId) return false;
     if (f.macroId && r.macroId !== +f.macroId) return false;

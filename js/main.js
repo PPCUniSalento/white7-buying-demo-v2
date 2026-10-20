@@ -1,21 +1,23 @@
 // Avvio, router a hash, barra dei ruoli e navigazione.
 
 import { state, carica, importaSeed, nonLetti, scriviLocale } from './db.js';
-import { RUOLI, testoDifferenze } from './util.js';
+import { RUOLI, DESTINATARI, testoDifferenze } from './util.js';
 import { registraComuni, toast } from './comp.js';
 import { PannelloBuyer, Ordini, Ordine, Articolo, Trasmissione } from './views-buyer.js';
 import { PannelloAdmin, PannelloNegozio, Arrivi, Pacchetto, Ricezione, Distinte, Distinta } from './views-arrivi.js';
 import { Ricerca, Report } from './views-analisi.js';
 import { Setup, Altro, Anagrafica, Registro } from './views-altro.js';
+import { PannelloConfig, CfgCategorie, CfgGriglie, CfgGriglia, CfgLista, CfgRegole } from './views-config.js';
 
 const { createApp, reactive, computed, watchEffect } = Vue;
 
-const TUTTI = ['buyer', 'amministrazione', 'logistica', 'puntovendita'];
-const RICEVONO = ['amministrazione', 'logistica', 'puntovendita'];
+const TUTTI = Object.keys(RUOLI);
+const RICEVONO = DESTINATARI;
+const CONFIG = ['config'];
 
 // nome rotta → componente per ruolo, parametri
 const ROTTE = {
-  '': { comp: { buyer: PannelloBuyer, amministrazione: PannelloAdmin, logistica: PannelloNegozio, puntovendita: PannelloNegozio } },
+  '': { comp: { buyer: PannelloBuyer, amministrazione: PannelloAdmin, logistica: PannelloNegozio, puntovendita: PannelloNegozio, config: PannelloConfig } },
   ordini: { comp: Ordini, ruoli: ['buyer'] },
   ordine: { comp: Ordine, ruoli: ['buyer', 'amministrazione'], par: ['id'] },
   articolo: { comp: Articolo, ruoli: ['buyer', 'amministrazione'], par: ['ordineId', 'rigaId'] },
@@ -31,6 +33,12 @@ const ROTTE = {
   altro: { comp: Altro, ruoli: TUTTI },
   anagrafica: { comp: Anagrafica, ruoli: TUTTI, par: ['tipo'] },
   registro: { comp: Registro, ruoli: TUTTI },
+  // configurazione del negozio (quinto ruolo, 20/10/2026)
+  'cfg-categorie': { comp: CfgCategorie, ruoli: CONFIG },
+  'cfg-taglie': { comp: CfgGriglie, ruoli: CONFIG },
+  'cfg-griglia': { comp: CfgGriglia, ruoli: CONFIG, par: ['id'] },
+  'cfg-lista': { comp: CfgLista, ruoli: CONFIG, par: ['tipo'] },
+  'cfg-regole': { comp: CfgRegole, ruoli: CONFIG },
 };
 
 const NAV = {
@@ -39,9 +47,10 @@ const NAV = {
   logistica: [['', 'home', 'Pannello'], ['arrivi', 'inbox', 'In arrivo'], ['distinte', 'clip', 'Distinte'], ['altro', 'more', 'Altro']],
 };
 NAV.puntovendita = NAV.logistica;
+NAV.config = [['', 'home', 'Pannello'], ['cfg-categorie', 'list', 'Categorie'], ['cfg-taglie', 'grid', 'Taglie'], ['cfg-regole', 'sliders', 'Regole'], ['altro', 'more', 'Altro']];
 
 // le sezioni "figlie" accendono la scheda madre nella barra in basso
-const MADRE = { ordine: 'ordini', articolo: 'ordini', trasmissione: 'ordini', pacchetto: 'arrivi', ricezione: 'arrivi', distinta: 'distinte', anagrafica: 'altro', registro: 'altro' };
+const MADRE = { ordine: 'ordini', articolo: 'ordini', trasmissione: 'ordini', pacchetto: 'arrivi', ricezione: 'arrivi', distinta: 'distinte', anagrafica: 'altro', registro: 'altro', 'cfg-griglia': 'cfg-taglie', 'cfg-lista': '' };
 
 const route = reactive({ nome: '', parti: [], query: {} });
 function leggiHash() {
@@ -123,6 +132,8 @@ async function avvia() {
   registraComuni(app);
   app.config.globalProperties.$vai = (h) => { location.hash = h; };
   app.config.globalProperties.$diff = testoDifferenze;
+  // asterisco sui campi resi obbligatori dalla configurazione
+  app.config.globalProperties.$ob = (k) => (state.cfg.obbligatori[k] ? ' *' : '');
   app.config.errorHandler = (err) => {
     console.error(err);
     toast('Errore: ' + (err && err.message ? err.message : err), 'err');

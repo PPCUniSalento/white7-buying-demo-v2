@@ -9,7 +9,7 @@ import { toast } from './comp.js';
 const { ref, reactive, computed, watch } = Vue;
 
 const ETICHETTE = {
-  stagione: (v) => stagioneNome(v), aziendaId: (v) => nomeAzienda(+v), fornitoreId: (v) => nomeFornitore(+v),
+  stagioni: (v) => v.map(stagioneNome).join(', '), aziendaId: (v) => nomeAzienda(+v), fornitoreId: (v) => nomeFornitore(+v),
   macroId: (v) => nomeMacro(+v), catId: (v) => nomeCat(+v), coloreId: (v) => nomeColore(+v), genere: (v) => GENERI[v],
   prezzoMin: (v) => `da ${euro0(v)}`, prezzoMax: (v) => `fino a ${euro0(v)}`, statoOrdine: (v) => STATI[v]?.nome,
   statoConsegna: (v) => `consegna ${v}`,
@@ -25,11 +25,19 @@ export const Ricerca = {
   setup(p) {
     const f = reactive(FILTRI_VUOTI());
     // filtri passati nel link (es. dall'avviso di sovrapposizione nella scheda articolo)
-    for (const k of ['stagione', 'macroId', 'catId', 'coloreId', 'fornitoreId']) if (p.query?.[k]) f[k] = p.query[k];
+    for (const k of ['macroId', 'catId', 'coloreId', 'fornitoreId']) if (p.query?.[k]) f[k] = p.query[k];
+    if (p.query?.stagione) f.stagioni = p.query.stagione.split(',');
     const pannello = ref(false), aperti = reactive(new Set()), limiteGruppi = ref(25);
     const elencoStagioni = stagioni();
     const categorie = computed(() => M.categorie.filter((c) => !f.macroId || c.macroId === +f.macroId).sort((a, b) => a.nome.localeCompare(b.nome)));
-    const attivi = computed(() => Object.keys(ETICHETTE).filter((k) => f[k] !== '' && f[k] != null));
+    const pieno = (v) => (Array.isArray(v) ? v.length > 0 : v !== '' && v != null);
+    const attivi = computed(() => Object.keys(ETICHETTE).filter((k) => pieno(f[k])));
+    const togli = (k) => { f[k] = Array.isArray(f[k]) ? [] : ''; };
+    // più stagioni insieme (richiesta del 20/10/2026), in ordine dalla più recente
+    const toggleStagione = (s) => {
+      f.stagioni = f.stagioni.includes(s) ? f.stagioni.filter((x) => x !== s) : [...f.stagioni, s].sort((a, b) => stagioneOrd(b) - stagioneOrd(a));
+    };
+    const ultime = (n) => { f.stagioni = elencoStagioni.slice(0, n); };
     const nessunFiltro = computed(() => !attivi.value.length && !f.testo.trim());
     const risultati = computed(() => { state.rev; return nessunFiltro.value ? [] : cerca(f); });
     const gruppi = computed(() => perFornitore(risultati.value));
@@ -41,7 +49,7 @@ export const Ricerca = {
       const col = M.colori.find((x) => x.nome.toLowerCase() === colore);
       if (c) { f.macroId = c.macroId; f.catId = c.id; }
       if (col) f.coloreId = col.id;
-      if (sk) f.stagione = sk;
+      if (sk) f.stagioni = [sk];
     }
     const azzera = () => Object.assign(f, FILTRI_VUOTI());
     async function excel() {
@@ -55,7 +63,7 @@ export const Ricerca = {
     const vai = (x) => { location.hash = `#/articolo/${x.o.id}/${x.r.id}`; };
     const skEsempio = stagioneRicca(elencoStagioni);
     return {
-      f, pannello, aperti, limiteGruppi, elencoStagioni, categorie, attivi, nessunFiltro, risultati, gruppi, tot, toggle, preset, azzera,
+      f, pannello, aperti, limiteGruppi, elencoStagioni, categorie, attivi, togli, toggleStagione, ultime, nessunFiltro, risultati, gruppi, tot, toggle, preset, azzera,
       excel, vai, skEsempio, ETICHETTE, M, STATI, GENERI, euro, euro0, num, stagioneNome, nomeCat, nomeColore,
     };
   },
@@ -66,17 +74,20 @@ export const Ricerca = {
       <button class="btn" :class="{primario: pannello}" @click="pannello = !pannello"><ic n="filter"/> Filtri<span v-if="attivi.length"> ({{ attivi.length }})</span></button>
     </div>
     <div class="chips" v-if="attivi.length">
-      <span v-for="k in attivi" :key="k" class="chip">{{ ETICHETTE[k](f[k]) }} <button @click="f[k] = ''" aria-label="Rimuovi">×</button></span>
+      <span v-for="k in attivi" :key="k" class="chip">{{ ETICHETTE[k](f[k]) }} <button @click="togli(k)" aria-label="Rimuovi">×</button></span>
       <button class="link" @click="azzera">Azzera</button>
     </div>
 
     <section class="card" v-if="pannello">
       <div class="form">
-        <label>Stagione<select class="inp" v-model="f.stagione"><option value="">Tutte</option>
-          <option v-for="s in elencoStagioni" :value="s">{{ stagioneNome(s) }}</option></select></label>
+        <div class="lbl-grp largo intero">Stagioni <small class="muted">una o più; nessuna = tutte</small>
+          <div class="chips stagioni-sel">
+            <button :class="{on: !f.stagioni.length}" @click="f.stagioni = []">Tutte</button>
+            <button @click="ultime(2)">Ultime 2</button><button @click="ultime(3)">Ultime 3</button>
+            <button v-for="s in elencoStagioni" :key="s" :class="{on: f.stagioni.includes(s)}" @click="toggleStagione(s)">{{ stagioneNome(s) }}</button></div></div>
         <label>Società<select class="inp" v-model="f.aziendaId"><option value="">Tutte</option>
           <option v-for="a in M.aziende" :value="a.id">{{ a.nome }}</option></select></label>
-        <label class="largo">Fornitore<fornitore-picker :model-value="f.fornitoreId ? +f.fornitoreId : null" @update:model-value="f.fornitoreId = $event"/></label>
+        <label class="largo">Fornitore<fornitore-picker :nuovo="false" :model-value="f.fornitoreId ? +f.fornitoreId : null" @update:model-value="f.fornitoreId = $event"/></label>
         <label>Categoria<select class="inp" v-model="f.macroId" @change="f.catId = ''"><option value="">Tutte</option>
           <option v-for="m in M.macro" :value="m.id">{{ m.nome }}</option></select></label>
         <label>Sottocategoria<select class="inp" v-model="f.catId"><option value="">Tutte</option>

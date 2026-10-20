@@ -4,13 +4,14 @@ import {
   M, state, righeOrdine, fotoRiga, nomeFornitore, nomeAzienda, nomeCat, nomeColore, stagioni, stagioneOrdine,
   salvaOrdine, nuovoOrdine, eliminaOrdine, salvaRiga, eliminaRiga, erroriRiga, erroriOrdine, cambiaStato,
   trasmetti, riepilogo, logga, salvaImpostazioni, nonLetti, segnaLetto, titoloOrdine, descriviCambio, chiaveBudget,
+  consegnaProposta, avvisiOrdine, oltreCartellino, lunghezzaCartellino, inRitardo, attivo, CAMPI_CARTELLINO,
 } from './db.js';
 import { apriMessaggio } from './views-arrivi.js';
 import { avvisi } from './analisi.js';
 import { esportaRighe } from './excel.js';
 import {
-  RUOLI, STATI, GENERI, euro, euro0, num, perc, data, dataOra, mese, meseCorrente, stagioneNome, stagionePrec, stagioneOrd,
-  totaleRiga, controllaCodice, debounce, consegnaStagione,
+  RUOLI, DESTINATARI, STATI, euro, euro0, num, perc, data, dataOra, dataConsegna, stagioneNome, stagionePrec, stagioneOrd,
+  totaleRiga, controllaCodice, debounce,
 } from './util.js';
 import { toast } from './comp.js';
 
@@ -67,8 +68,10 @@ const PannelloRiepilogo = {
   </section></aside>`,
 };
 
-// Suggerimenti per le condizioni di pagamento (campo libero)
-const elencoPagamenti = () => [...new Set([...(M.pagamenti || []), 'Conto vendita'])];
+// Suggerimenti per le condizioni di pagamento (campo libero; l'elenco si gestisce dal ruolo Configurazione)
+const elencoPagamenti = () => (M.pagamenti || []).filter(Boolean);
+// Voci selezionabili: le attive, più quella già scelta anche se nel frattempo è stata disattivata
+const selezionabili = (elenco, scelto) => elenco.filter((x) => attivo(x) || x.id === scelto);
 
 // ---------------------------------------------------------------- pannello
 export const PannelloBuyer = {
@@ -112,8 +115,7 @@ export const PannelloBuyer = {
     });
     const ritardi = computed(() => {
       state.rev;
-      const ora = meseCorrente();
-      return [...M.ord.values()].filter((o) => (o.stato === 'trasmesso' || o.stato === 'parziale') && o.consegnaA && o.consegnaA < ora);
+      return [...M.ord.values()].filter((o) => (o.stato === 'trasmesso' || o.stato === 'parziale') && inRitardo(o.consegnaA));
     });
     const ultimi = computed(() => {
       state.rev;
@@ -123,7 +125,7 @@ export const PannelloBuyer = {
     async function nuovo() { const o = await nuovoOrdine(); vai(`#/ordine/${o.id}`); }
     return {
       tutti, sk, conteggi, stag, al, budget, notifiche, ritardi, ultimi, nuovo, apriNotifica: apriMessaggio, stagioni: stagioniDisponibili(),
-      stagioneNome, euro0, num, perc, mese, dataOra, nomeFornitore, totaliOrdine, euro, STATI,
+      stagioneNome, euro0, num, perc, dataConsegna, dataOra, nomeFornitore, totaliOrdine, euro, STATI,
     };
   },
   template: `<div class="pagina">
@@ -172,7 +174,7 @@ export const PannelloBuyer = {
       <div class="card-h"><h2>Consegne in ritardo</h2></div>
       <ul class="lista">
         <li v-for="o in ritardi" :key="o.id" @click="$vai('#/ordine/' + o.id)">
-          <ic n="truck"/><div><b>n. {{ o.id }} · {{ nomeFornitore(o.fornitoreId) }}</b><small>attesa entro {{ mese(o.consegnaA) }} · {{ STATI[o.stato].nome }}</small></div></li>
+          <ic n="truck"/><div><b>n. {{ o.id }} · {{ nomeFornitore(o.fornitoreId) }}</b><small>attesa entro {{ dataConsegna(o.consegnaA) }} · {{ STATI[o.stato].nome }}</small></div></li>
       </ul>
     </section>
 
@@ -242,12 +244,12 @@ export const Ordine = {
     const o = reactive(JSON.parse(JSON.stringify(orig)));
     const snapshot = JSON.stringify(orig);
     const modificabile = computed(() => o.stato === 'bozza' && state.ruolo === 'buyer');
-    const errori = ref(null), cronologia = ref(false), esporta = ref(false);
+    const errori = ref(null), avvisi = ref(null), cronologia = ref(false), esporta = ref(false);
     const salva = debounce(() => salvaOrdine(o), 400);
     watch(o, () => { if (modificabile.value) salva(); }, { deep: true });
     watch(() => [o.anno, o.stagione], () => { /* stagione cambiata: aggiorna periodo di consegna proposto */
       if (!modificabile.value) return;
-      [o.consegnaDa, o.consegnaA] = consegnaStagione(o.anno, o.stagione);
+      [o.consegnaDa, o.consegnaA] = consegnaProposta(o.anno, o.stagione);
     });
     const stagioneSel = computed({
       get: () => `${o.anno}${o.stagione}`,
@@ -265,6 +267,7 @@ export const Ordine = {
     const righe = computed(() => { state.rev; return [...righeOrdine(p.id)]; });
     const nErr = (r) => { state.rev; return erroriRiga(r).length; };
     const nFoto = (r) => { state.rev; return fotoRiga(r.id).length; };
+    const cartellino = (r) => { state.rev; return oltreCartellino(r); };
     const log = computed(() => {
       state.rev;
       const ids = new Set(righe.value.map((r) => r.id));
@@ -284,10 +287,13 @@ export const Ordine = {
       });
       vai(`#/articolo/${p.id}/${r.id}`);
     }
-    async function conferma() {
+    async function conferma(comunque = false) {
       salva.flush();
       const e = erroriOrdine(o);
       if (e.length) { errori.value = e; return; }
+      const a = avvisiOrdine(o);
+      if (a.length && !comunque) { avvisi.value = a; return; }
+      avvisi.value = null;
       await cambiaStato(p.id, 'confermato');
       o.stato = 'confermato';
       toast('Ordine confermato: ora può essere trasmesso');
@@ -311,9 +317,9 @@ export const Ordine = {
       });
     }
     return {
-      mancante: false, o, modificabile, errori, cronologia, esporta, stagioneSel, righe, nErr, nFoto, log, distinte,
-      nuovoArticolo, conferma, riapri, elimina, excel, M, state, stagioni: stagioniDisponibili(),
-      stagioneNome, nomeFornitore, nomeCat, nomeColore, euro, num, data, dataOra, mese, totaleRiga, RUOLI, elencoPagamenti,
+      mancante: false, o, modificabile, errori, avvisi, cronologia, esporta, stagioneSel, righe, nErr, nFoto, cartellino, log, distinte,
+      nuovoArticolo, conferma, riapri, elimina, excel, M, state, stagioni: stagioniDisponibili(), aziende: computed(() => selezionabili(M.aziende, o.aziendaId)),
+      stagioneNome, nomeFornitore, nomeCat, nomeColore, euro, num, data, dataOra, totaleRiga, RUOLI, elencoPagamenti,
     };
   },
   template: `<div class="pagina con-barra layout-ordine" v-if="!mancante"><div class="col-main">
@@ -330,16 +336,16 @@ export const Ordine = {
     <section class="card">
       <div class="card-h"><h2>Testata</h2><small class="muted">inserito il {{ data(o.data) }}</small></div>
       <div class="form">
-        <label>Società *<select class="inp" v-model.number="o.aziendaId" :disabled="!modificabile">
-          <option v-for="a in M.aziende" :value="a.id">{{ a.nome }}</option></select></label>
+        <label>Società{{ $ob('aziendaId') }}<select class="inp" v-model.number="o.aziendaId" :disabled="!modificabile">
+          <option :value="null">–</option><option v-for="a in aziende" :value="a.id">{{ a.nome }}</option></select></label>
         <label>Stagione *<select class="inp" v-model="stagioneSel" :disabled="!modificabile">
           <option v-for="s in stagioni" :value="s">{{ stagioneNome(s) }}</option></select></label>
         <label class="largo">Fornitore *<fornitore-picker v-model="o.fornitoreId" :disabled="!modificabile"/></label>
-        <label class="largo">Condizioni di pagamento<input class="inp" list="elenco-pagamenti" v-model="o.pagamento" :disabled="!modificabile"
-            placeholder="Scegli o scrivi (es. conto vendita)" autocomplete="off">
+        <label class="largo">Condizioni di pagamento{{ $ob('pagamento') }}<input class="inp" list="elenco-pagamenti" v-model="o.pagamento" :disabled="!modificabile"
+            placeholder="Scegli o scrivi (es. conto vendita, nessuna)" autocomplete="off">
           <datalist id="elenco-pagamenti"><option v-for="p in elencoPagamenti()" :key="p" :value="p"></option></datalist></label>
-        <label>Consegna da<input class="inp" type="month" v-model="o.consegnaDa" :disabled="!modificabile"></label>
-        <label>Consegna a<input class="inp" type="month" v-model="o.consegnaA" :disabled="!modificabile"></label>
+        <label class="cons">Consegna da{{ $ob('consegna') }}<data-consegna v-model="o.consegnaDa" :disabled="!modificabile"/></label>
+        <label class="cons">Consegna entro{{ $ob('consegna') }}<data-consegna v-model="o.consegnaA" fine :disabled="!modificabile"/></label>
         <label>Sconto extra %<input class="inp" type="number" inputmode="decimal" min="0" max="100" v-model.number="o.scontoExtra" :disabled="!modificabile"></label>
         <label class="largo">Note generali / riferimenti interni<textarea class="inp" rows="2" v-model="o.note" :disabled="!modificabile"></textarea></label>
       </div>
@@ -355,7 +361,8 @@ export const Ordine = {
             <small>{{ r.descrizione || '–' }}</small>
             <small>{{ r.catId ? nomeCat(r.catId) : '–' }} · {{ r.coloreId ? nomeColore(r.coloreId) : '–' }}</small>
             <span v-if="modificabile && nErr(r)" class="err-mini">{{ nErr(r) }} da completare</span>
-            <span v-else-if="!o.storico && nFoto(r) < state.imp.minFoto" class="err-mini">{{ nFoto(r) }} foto</span></div>
+            <span v-else-if="!o.storico && nFoto(r) < state.cfg.minFoto" class="err-mini">{{ nFoto(r) }} foto</span>
+            <span v-if="!o.storico && cartellino(r)" class="avv-mini">cartellino {{ cartellino(r) }}/{{ state.cfg.cartellino.limite }} caratteri</span></div>
           <div class="dx"><b>{{ num(r.qta) }} pz</b><small>{{ euro(r.prezzo) }}</small><small v-if="r.sconto">−{{ r.sconto }}%</small>
             <b>{{ euro(totaleRiga(r)) }}</b></div></li>
         <li v-if="!righe.length" class="vuoto">Nessun articolo. <button v-if="modificabile" class="link" @click="nuovoArticolo">Aggiungi il primo</button></li>
@@ -363,7 +370,7 @@ export const Ordine = {
     </section>
 
     <div class="azioni-pagina">
-      <button v-if="o.stato === 'bozza'" class="btn primario" @click="conferma"><ic n="check"/> Conferma ordine</button>
+      <button v-if="o.stato === 'bozza'" class="btn primario" @click="conferma()"><ic n="check"/> Conferma ordine</button>
       <a v-if="o.stato === 'confermato'" class="btn primario" :href="'#/trasmissione?sel=' + o.id"><ic n="send"/> Trasmetti</a>
       <button class="btn" @click="esporta = true" :disabled="!righe.length"><ic n="download"/> Excel</button>
       <button class="btn" @click="cronologia = true"><ic n="list"/> Cronologia</button>
@@ -387,6 +394,13 @@ export const Ordine = {
       <p>Per confermare l'ordine completa:</p>
       <ul class="lista-err"><li v-for="e in errori">{{ e }}</li></ul>
       <p class="muted">Gli articoli incompleti sono segnalati in rosso nell'elenco.</p>
+    </sheet>
+    <sheet v-if="avvisi" titolo="Prima di confermare" @chiudi="avvisi = null">
+      <p>L'ordine è completo, ma:</p>
+      <ul class="lista-avv"><li v-for="a in avvisi">{{ a }}</li></ul>
+      <p class="muted">Il testo oltre il limite potrebbe non entrare nel gestionale o sul cartellino. Si può accorciare o confermare lo stesso.</p>
+      <div class="azioni-pagina"><button class="btn primario" @click="conferma(true)"><ic n="check"/> Conferma comunque</button>
+        <button class="btn" @click="avvisi = null">Torna all'ordine</button></div>
     </sheet>
     <sheet v-if="esporta" titolo="Esporta in Excel" @chiudi="esporta = false">
       <div class="menu-azioni">
@@ -428,17 +442,26 @@ export const Articolo = {
     const salva = debounce(() => salvaRiga(copiaPerSalvare()), 350);
     watch(r, () => { if (modificabile) salva(); }, { deep: true });
 
-    const categorie = computed(() => M.categorie.filter((c) => c.macroId === r.macroId).sort((a, b) => a.nome.localeCompare(b.nome)));
+    const macro = computed(() => selezionabili(M.macro, r.macroId));
+    const categorie = computed(() => selezionabili(M.categorie.filter((c) => c.macroId === r.macroId), r.catId).sort((a, b) => a.nome.localeCompare(b.nome)));
+    const colori = computed(() => selezionabili(M.colori, r.coloreId));
+    const generi = computed(() => Object.fromEntries(state.cfg.generi.filter((g) => g.attivo !== false || g.k === r.genere).map((g) => [g.k, g.nome])));
     watch(() => r.macroId, () => { if (r.catId && M.cat.get(r.catId)?.macroId !== r.macroId) r.catId = null; });
     const griglie = computed(() => {
       const c = M.cat.get(r.catId);
-      return (c?.griglie || []).map((id) => M.gri.get(id)).filter(Boolean);
+      return (c?.griglie || []).map((id) => M.gri.get(id)).filter((g) => attivo(g) || (g && g.id === r.grigliaId));
     });
     watch(() => r.catId, () => {
       if (!modificabile) return;
       if (r.grigliaId && !griglie.value.some((g) => g.id === r.grigliaId)) { r.grigliaId = null; r.taglie = null; }
     });
     const griglia = computed(() => (r.grigliaId ? M.gri.get(r.grigliaId) : null));
+    // taglie da mostrare: quelle della griglia, più quelle già compilate e poi tolte dalla griglia in configurazione
+    const taglieVista = computed(() => {
+      const t = [...(griglia.value?.taglie || [])];
+      for (const [k, q] of Object.entries(r.taglie || {})) if (q && !t.includes(k)) t.push(k);
+      return t;
+    });
     watch(() => r.grigliaId, (g, prima) => {
       if (!modificabile || g === prima) return;
       if (!g) { r.taglie = null; return; }
@@ -454,7 +477,13 @@ export const Articolo = {
       for (const k of Object.keys(r.taglie)) r.taglie[k] = (Number(r.taglie[k]) || 0) + n;
     }
 
-    const erroreCodice = computed(() => (r.codArt ? controllaCodice(r.codArt) : null));
+    const erroreCodice = computed(() => (r.codArt ? controllaCodice(r.codArt, state.cfg.coloreInCodice) : null));
+    // testo del cartellino (somma dei campi configurati): avviso oltre il limite, non blocca
+    const cartellino = computed(() => {
+      const lim = state.cfg.cartellino.limite;
+      const campi = CAMPI_CARTELLINO.filter(([k]) => state.cfg.cartellino.campi.includes(k)).map(([, n]) => n.toLowerCase());
+      return { n: lunghezzaCartellino(r), lim, oltre: lim > 0 && lunghezzaCartellino(r) > lim, campi: campi.join(' + ') };
+    });
     const duplicato = computed(() => !!r.codArt && righeOrdine(p.ordineId).some((x) => x.id !== r.id && x.codArt === r.codArt.trim()));
     // Sovrapposizioni: quanto si è già comprato della stessa sottocategoria (e colore) nella stagione,
     // da quanti fornitori, e quanto nella stessa stagione dell'anno prima (errori di acquisto per eccesso o prudenza)
@@ -543,8 +572,8 @@ export const Articolo = {
     }
 
     return {
-      mancante: false, r, ord, modificabile, nuovoCod, categorie, griglie, griglia, distribuisci, erroreCodice, duplicato,
-      storico, sovrapp, linkRicerca, totale, errori, maiuscolo, aggiungiVecchio, nuovoSimile, elimina, M, GENERI, euro, num, stagioneNome, nomeFornitore,
+      mancante: false, r, ord, modificabile, nuovoCod, macro, categorie, colori, generi, griglie, griglia, taglieVista, distribuisci, erroreCodice, duplicato,
+      cartellino, storico, sovrapp, linkRicerca, totale, errori, maiuscolo, aggiungiVecchio, nuovoSimile, elimina, M, state, euro, num, stagioneNome, nomeFornitore,
     };
   },
   template: `<div class="pagina con-barra layout-ordine" v-if="!mancante"><div class="col-main">
@@ -561,7 +590,7 @@ export const Articolo = {
             autocomplete="off" spellcheck="false" placeholder="CODICETESSUTO COLORE">
           <small v-if="erroreCodice" class="err">{{ erroreCodice }}</small>
           <small v-else-if="duplicato" class="err">Codice già presente in questo ordine</small>
-          <small v-else class="aiuto">Codice e tessuto uniti, poi uno spazio e il codice colore</small>
+          <small v-else-if="state.cfg.coloreInCodice" class="aiuto">Codice e tessuto uniti, poi uno spazio e il codice colore</small>
           <small v-if="storico" class="info">Già acquistato in {{ storico.n }} stagion{{ storico.n === 1 ? 'e' : 'i' }} ({{ storico.pezzi }} capi);
             ultima {{ stagioneNome(storico.ultima) }} a {{ euro(storico.prezzo) }}</small></label>
         <label class="largo check"><input type="checkbox" v-model="r.continuativo" :disabled="!modificabile"> Articolo continuativo</label>
@@ -572,19 +601,19 @@ export const Articolo = {
           <div v-if="modificabile" class="riga-inp"><input class="inp mono" v-model="nuovoCod" placeholder="Vecchio codice" @keyup.enter="aggiungiVecchio">
             <button class="btn" @click="aggiungiVecchio">Aggiungi</button></div>
         </div>
-        <label>Categoria *<select class="inp" v-model.number="r.macroId" :disabled="!modificabile">
-          <option :value="null" disabled>Seleziona…</option><option v-for="m in M.macro" :value="m.id">{{ m.nome }}</option></select></label>
-        <label>Sottocategoria *<select class="inp" v-model.number="r.catId" :disabled="!modificabile || !r.macroId">
+        <label>Categoria{{ $ob('macroId') }}<select class="inp" v-model.number="r.macroId" :disabled="!modificabile">
+          <option :value="null" disabled>Seleziona…</option><option v-for="m in macro" :value="m.id">{{ m.nome }}</option></select></label>
+        <label>Sottocategoria{{ $ob('catId') }}<select class="inp" v-model.number="r.catId" :disabled="!modificabile || !r.macroId">
           <option :value="null" disabled>Seleziona…</option><option v-for="c in categorie" :value="c.id">{{ c.nome }}</option></select></label>
-        <label>Colore<select class="inp" v-model.number="r.coloreId" :disabled="!modificabile">
-          <option :value="null" disabled>Seleziona…</option><option v-for="c in M.colori" :value="c.id">{{ c.nome }}</option></select>
+        <label>Colore{{ $ob('coloreId') }}<select class="inp" v-model.number="r.coloreId" :disabled="!modificabile">
+          <option :value="null" disabled>Seleziona…</option><option v-for="c in colori" :value="c.id">{{ c.nome }}</option></select>
           <small v-if="r.coloreDedotto" class="aiuto">dedotto dalla descrizione</small></label>
-        <div class="lbl-grp largo">Genere *<div class="seg">
-          <button v-for="(g, k) in GENERI" :key="k" :class="{on: r.genere === k}" :disabled="!modificabile" @click="r.genere = k">{{ g }}</button></div></div>
+        <div class="lbl-grp largo">Genere{{ $ob('genere') }}<div class="seg">
+          <button v-for="(g, k) in generi" :key="k" :class="{on: r.genere === k}" :disabled="!modificabile" @click="r.genere = k">{{ g }}</button></div></div>
       </div>
     </section>
 
-    <section v-if="sovrapp" class="card sovrapp" :class="{attenzione: sovrapp.forn >= 3}">
+    <section v-if="sovrapp" class="card sovrapp" :class="{attenzione: sovrapp.forn >= state.cfg.sovrappFornitori}">
       <div class="card-h"><h2><ic n="alert" :s="16"/> Già in {{ stagioneNome(sovrapp.sk) }}</h2>
         <a class="link" :href="linkRicerca">Vedi <ic n="next" :s="14"/></a></div>
       <p v-if="sovrapp.capi"><b>{{ num(sovrapp.capi) }} capi</b> di {{ sovrapp.cat.toLowerCase() }} da <b>{{ sovrapp.forn }} fornitor{{ sovrapp.forn === 1 ? 'e' : 'i' }}</b>
@@ -596,31 +625,35 @@ export const Articolo = {
     <section class="card">
       <div class="card-h"><h2>Quantità e prezzo</h2></div>
       <div class="form">
-        <label class="largo">Griglia taglie<select class="inp" v-model.number="r.grigliaId" :disabled="!modificabile || !griglie.length">
+        <label class="largo">Griglia taglie{{ $ob('grigliaId') }}<select class="inp" v-model.number="r.grigliaId" :disabled="!modificabile || !griglie.length">
           <option :value="null">Nessuna (solo quantità totale)</option><option v-for="g in griglie" :value="g.id">{{ g.nome }}</option></select></label>
         <div v-if="griglia && r.taglie" class="largo taglie">
-          <label v-for="t in griglia.taglie" :key="t"><span>{{ t }}</span>
+          <label v-for="t in taglieVista" :key="t"><span>{{ t }}</span>
             <input class="inp" type="number" inputmode="numeric" min="0" v-model.number="r.taglie[t]" :disabled="!modificabile"></label>
           <div v-if="modificabile" class="taglie-az"><button class="btn piccolo" @click="distribuisci(1)">+1 a tutte</button>
             <button class="btn piccolo" @click="distribuisci(2)">+2 a tutte</button></div>
         </div>
         <label>N. pezzi *<input class="inp" type="number" inputmode="numeric" min="0" v-model.number="r.qta" :disabled="!modificabile || !!griglia"></label>
-        <label>Prezzo € *<input class="inp" type="number" inputmode="decimal" min="0" step="0.01" v-model.number="r.prezzo" :disabled="!modificabile"></label>
+        <label>Prezzo €{{ $ob('prezzo') }}<input class="inp" type="number" inputmode="decimal" min="0" step="0.01" v-model.number="r.prezzo" :disabled="!modificabile"></label>
         <label>Sconto %<input class="inp" type="number" inputmode="decimal" min="0" max="100" v-model.number="r.sconto" :disabled="!modificabile"></label>
         <div class="totale-riga"><span>Importo</span><b>{{ euro(totale) }}</b></div>
       </div>
     </section>
 
     <section class="card">
-      <div class="card-h"><h2>Descrizione e note</h2></div>
+      <div class="card-h"><h2>Descrizione e note</h2>
+        <small v-if="cartellino.lim > 0" class="cont-cart" :class="{oltre: cartellino.oltre}">cartellino {{ cartellino.n }}/{{ cartellino.lim }}</small></div>
       <div class="form">
-        <label class="largo">Descrizione commerciale<input class="inp" v-model="r.descrizione" :disabled="!modificabile"></label>
-        <label class="largo">Composizione / materiali<input class="inp" v-model="r.composizione" :disabled="!modificabile"></label>
+        <label class="largo">Descrizione commerciale{{ $ob('descrizione') }}<input class="inp" v-model="r.descrizione" :disabled="!modificabile"></label>
+        <label class="largo">Composizione / materiali{{ $ob('composizione') }}<input class="inp" v-model="r.composizione" :disabled="!modificabile"></label>
         <label class="largo">Dettagli<textarea class="inp" rows="3" v-model="r.dettagli" :disabled="!modificabile"></textarea></label>
         <label class="largo">Misure<input class="inp" v-model="r.misure" :disabled="!modificabile"></label>
         <label class="largo">Note operative (da verificare alla consegna)
           <textarea class="inp nota" rows="3" v-model="r.note" :disabled="!modificabile" placeholder="Es. il fornitore ha promesso di correggere il difetto del campione sul collo"></textarea></label>
       </div>
+      <p v-if="cartellino.lim > 0" class="nota-cart" :class="{oltre: cartellino.oltre}">
+        <template v-if="cartellino.oltre"><ic n="alert" :s="15"/> {{ cartellino.n }} caratteri: oltre il limite di {{ cartellino.lim }} per il cartellino e il gestionale ({{ cartellino.campi }}). Non blocca la conferma.</template>
+        <template v-else>Testo del cartellino ({{ cartellino.campi }}): {{ cartellino.n }} caratteri su {{ cartellino.lim }}.</template></p>
     </section>
 
     <section class="card" v-if="modificabile && errori.length">
@@ -645,7 +678,7 @@ export const Trasmissione = {
   props: { query: Object },
   setup(p) {
     const sel = reactive(new Set(p.query?.sel ? [Number(p.query.sel)] : []));
-    const dest = reactive({ amministrazione: true, logistica: true, puntovendita: true });
+    const dest = reactive(Object.fromEntries(DESTINATARI.map((k) => [k, true])));
     const elenco = computed(() => { state.rev; return [...M.ord.values()].filter((o) => o.stato === 'confermato'); });
     const recenti = computed(() => {
       state.rev;
@@ -665,7 +698,7 @@ export const Trasmissione = {
       toast(`${n} ordin${n === 1 ? 'e trasmesso' : 'i trasmessi'} a ${destinatari.value.map((d) => RUOLI[d].nome).join(', ')}`);
       sel.clear();
     }
-    return { sel, dest, elenco, recenti, tutti, toggle, destinatari, invia, RUOLI, nomeFornitore, totaliOrdine, euro, num, stagioneNome, dataOra };
+    return { sel, dest, elenco, recenti, tutti, toggle, destinatari, invia, RUOLI, DESTINATARI, nomeFornitore, totaliOrdine, euro, num, stagioneNome, dataOra };
   },
   template: `<div class="pagina">
     <page-head titolo="Trasmissione" sotto="Ordini confermati pronti per l'invio" indietro="#/ordini"/>
@@ -683,9 +716,9 @@ export const Trasmissione = {
     <section class="card">
       <div class="card-h"><h2>Destinatari</h2></div>
       <div class="dest">
-        <label v-for="(r, k) in RUOLI" :key="k" v-show="k !== 'buyer'" class="dest-c" :style="{'--c': r.colore}">
-          <input type="checkbox" v-model="dest[k]"><div><b>{{ r.nome }}</b>
-          <small>{{ r.prezzi ? 'Dati completi: prezzi, sconti, pagamento' : 'Senza prezzi d’acquisto, sconti e pagamento' }}</small></div></label>
+        <label v-for="k in DESTINATARI" :key="k" class="dest-c" :style="{'--c': RUOLI[k].colore}">
+          <input type="checkbox" v-model="dest[k]"><div><b>{{ RUOLI[k].nome }}</b>
+          <small>{{ RUOLI[k].prezzi ? 'Dati completi: prezzi, sconti, pagamento' : 'Senza prezzi d’acquisto, sconti e pagamento' }}</small></div></label>
       </div>
     </section>
     <button class="btn primario pieno grande" :disabled="!sel.size || !destinatari.length" @click="invia">

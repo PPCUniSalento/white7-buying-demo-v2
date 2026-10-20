@@ -5,11 +5,11 @@
 
 import {
   M, state, righeOrdine, segnaLetto, inviaDistinta, chiudiConDifferenze, nomeFornitore, stagioneOrdine,
-  taglieOrdinate, ricevutoPerTaglia, confrontoTaglie, statoRigheOrdine, sommaTaglie, DISCREPANZE,
+  taglieOrdinate, ricevutoPerTaglia, confrontoTaglie, statoRigheOrdine, sommaTaglie, DISCREPANZE, inRitardo,
 } from './db.js';
 import { esportaRighe } from './excel.js';
 import {
-  RUOLI, STATI, GENERI, PROBLEMI, SENZA_TAGLIA, euro, euro0, num, perc, dataOra, mese, meseCorrente, stagioneNome, totaleRiga,
+  RUOLI, STATI, GENERI, PROBLEMI, SENZA_TAGLIA, euro, euro0, num, perc, dataOra, mese, meseCorrente, dataConsegna, stagioneNome, totaleRiga,
 } from './util.js';
 import { toast } from './comp.js';
 
@@ -120,18 +120,17 @@ export const PannelloAdmin = {
           cons += pu * (o.storico && o.stato === 'chiuso' ? r.qta || 0 : st.get(r.id)?.conformi || 0);
         }
       }
-      const ora = meseCorrente();
       return {
         ordini, trasm, cons, sk, diff: differenzeAperte(),
         attese: [...M.ord.values()].filter((o) => o.stato === 'trasmesso').length,
         parziali: [...M.ord.values()].filter((o) => o.stato === 'parziale').length,
-        ritardi: [...M.ord.values()].filter((o) => ['trasmesso', 'parziale'].includes(o.stato) && o.consegnaA && o.consegnaA < ora),
+        ritardi: [...M.ord.values()].filter((o) => ['trasmesso', 'parziale'].includes(o.stato) && inRitardo(o.consegnaA)),
         nuove: avvisi.filter((m) => !m.letto).length,
         recenti: [...ordini, ...avvisi].sort((a, b) => (b.data || '').localeCompare(a.data || '')).slice(0, 8),
       };
     });
     const apriDiff = (o) => { const x = msgOrdine(o.id, 'amministrazione'); if (x) vai(`#/pacchetto/${x.id}`); };
-    return { dati, apri: apriMessaggio, apriDiff, icona, euro0, num, perc, dataOra, mese, stagioneNome, nomeFornitore, STATI };
+    return { dati, apri: apriMessaggio, apriDiff, icona, euro0, num, perc, dataOra, dataConsegna, stagioneNome, nomeFornitore, STATI };
   },
   template: `<div class="pagina">
     <page-head titolo="Pannello" sotto="Amministrazione"/>
@@ -169,7 +168,7 @@ export const PannelloAdmin = {
     <section class="card" v-if="dati.ritardi.length">
       <div class="card-h"><h2>Consegne in ritardo</h2></div>
       <ul class="lista"><li v-for="o in dati.ritardi" :key="o.id"><ic n="truck"/>
-        <div class="grow"><b>n. {{ o.id }} · {{ nomeFornitore(o.fornitoreId) }}</b><small>attesa entro {{ mese(o.consegnaA) }} · {{ STATI[o.stato].nome }}</small></div></li></ul>
+        <div class="grow"><b>n. {{ o.id }} · {{ nomeFornitore(o.fornitoreId) }}</b><small>attesa entro {{ dataConsegna(o.consegnaA) }} · {{ STATI[o.stato].nome }}</small></div></li></ul>
     </section>
   </div>`,
 };
@@ -182,10 +181,9 @@ export const PannelloNegozio = {
       const ruolo = state.ruolo;
       const msg = messaggiRuolo(ruolo, 'ordine');
       const daRic = msg.filter((m) => ['trasmesso', 'parziale'].includes(M.ord.get(m.ordineId)?.stato));
-      const ora = meseCorrente();
       const perMese = new Map();
       for (const m of daRic) {
-        const k = m.payload.testa.consegnaA || '';
+        const k = (m.payload.testa.consegnaA || '').slice(0, 7);
         if (!perMese.has(k)) perMese.set(k, { k, n: 0, pezzi: 0 });
         const g = perMese.get(k);
         g.n++; g.pezzi += pezziPacchetto(m);
@@ -193,7 +191,7 @@ export const PannelloNegozio = {
       return {
         msg, daRic, nuovi: msg.filter((m) => !m.letto),
         parziali: daRic.filter((m) => M.ord.get(m.ordineId)?.stato === 'parziale').length,
-        ritardi: daRic.filter((m) => m.payload.testa.consegnaA && m.payload.testa.consegnaA < ora),
+        ritardi: daRic.filter((m) => inRitardo(m.payload.testa.consegnaA)),
         mesi: [...perMese.values()].sort((a, b) => a.k.localeCompare(b.k)),
         diff: ruolo === 'logistica' ? differenzeAperte() : [],
       };
@@ -201,7 +199,7 @@ export const PannelloNegozio = {
     const apri = (m) => { segnaLetto(m.id); vai(`#/pacchetto/${m.id}`); };
     const apriDiff = (o) => { const x = msgOrdine(o.id, state.ruolo); if (x) vai(`#/pacchetto/${x.id}`); };
     const sotto = computed(() => (state.ruolo === 'logistica' ? 'Logistica · consultazione delle consegne ai negozi' : 'Punto vendita'));
-    return { dati, apri, apriDiff, sotto, primaFoto, pezziPacchetto, num, mese, dataOra, stagioneNome, nomeFornitore, RUOLI, state, meseCorrente };
+    return { dati, apri, apriDiff, sotto, primaFoto, pezziPacchetto, num, mese, dataConsegna, dataOra, stagioneNome, nomeFornitore, RUOLI, state, meseCorrente };
   },
   template: `<div class="pagina">
     <page-head titolo="Pannello" :sotto="sotto"/>
@@ -227,7 +225,7 @@ export const PannelloNegozio = {
           <thumb :foto-id="primaFoto(m)" :w="44"/>
           <div class="grow"><b>{{ m.payload.testa.fornitore }}</b>
             <small>{{ stagioneNome(m.payload.testa.stagione) }} · {{ m.payload.righe.length }} articoli · {{ num(pezziPacchetto(m)) }} capi</small>
-            <small>consegna {{ mese(m.payload.testa.consegnaDa) }} – {{ mese(m.payload.testa.consegnaA) }}</small></div></li>
+            <small>consegna {{ dataConsegna(m.payload.testa.consegnaDa) }} – {{ dataConsegna(m.payload.testa.consegnaA) }}</small></div></li>
       </ul>
     </section>
     <section class="card">
@@ -258,7 +256,7 @@ export const Arrivi = {
     });
     const apri = (m) => { segnaLetto(m.id); vai(`#/pacchetto/${m.id}`); };
     const stato = (m) => M.ord.get(m.ordineId)?.stato;
-    return { scheda, q, elenco, apri, stato, primaFoto, pezziPacchetto, valorePacchetto, percRicevuto, num, euro, mese, dataOra, stagioneNome, RUOLI, state };
+    return { scheda, q, elenco, apri, stato, primaFoto, pezziPacchetto, valorePacchetto, percRicevuto, num, euro, dataConsegna, dataOra, stagioneNome, RUOLI, state };
   },
   template: `<div class="pagina">
     <page-head titolo="In arrivo" :sotto="'Ordini trasmessi a ' + RUOLI[state.ruolo].nome"/>
@@ -271,7 +269,7 @@ export const Arrivi = {
         <div class="grow"><b>n. {{ m.payload.testa.id }} · {{ m.payload.testa.fornitore }}</b>
           <small>{{ stagioneNome(m.payload.testa.stagione) }} · {{ m.payload.righe.length }} art. · {{ num(pezziPacchetto(m)) }} capi
             <span v-if="m.payload.prezzi"> · {{ euro(valorePacchetto(m)) }}</span></small>
-          <small>consegna {{ mese(m.payload.testa.consegnaDa) }} – {{ mese(m.payload.testa.consegnaA) }} · trasmesso il {{ dataOra(m.data) }}</small>
+          <small>consegna {{ dataConsegna(m.payload.testa.consegnaDa) }} – {{ dataConsegna(m.payload.testa.consegnaA) }} · trasmesso il {{ dataOra(m.data) }}</small>
           <div v-if="stato(m) === 'parziale'" class="barra-perc piccola"><i :style="{width: percRicevuto(m.ordineId) + '%'}"></i></div></div>
         <stato-badge :stato="stato(m)"/></li>
       <li v-if="!elenco.length" class="vuoto">Nessun ordine.</li>
@@ -333,7 +331,7 @@ export const Pacchetto = {
     return {
       mancante: false, m, testa, righe, prezzi, q, visore, chiudi, notaChiusura, conferma, ordine, stato, ric, stRighe, pr, filtrate, riep,
       distinte, puoRicevere, puoChiudere, diff, eseguiChiusura, excel, taglieOrdinate, STATI_RIGA, statoRigaVisto,
-      GENERI, RUOLI, euro, num, perc, mese, dataOra, stagioneNome,
+      GENERI, RUOLI, euro, num, perc, dataConsegna, dataOra, stagioneNome,
     };
   },
   template: `<div class="pagina" v-if="!mancante">
@@ -347,7 +345,7 @@ export const Pacchetto = {
       <div class="kv">
         <div><span>Società</span><b>{{ testa.azienda }}</b></div>
         <div><span>Stagione</span><b>{{ stagioneNome(testa.stagione) }}</b></div>
-        <div><span>Consegna</span><b>{{ testa.consegnaDa ? mese(testa.consegnaDa) + ' – ' + mese(testa.consegnaA) : '–' }}</b></div>
+        <div><span>Consegna</span><b>{{ testa.consegnaDa ? dataConsegna(testa.consegnaDa) + ' – ' + dataConsegna(testa.consegnaA) : '–' }}</b></div>
         <div><span>Trasmesso</span><b>{{ dataOra(m.data) }}</b></div>
         <div v-if="prezzi"><span>Pagamento</span><b>{{ testa.pagamento || '–' }}</b></div>
         <div v-if="prezzi && testa.scontoExtra"><span>Sconto extra</span><b>{{ testa.scontoExtra }}%</b></div>

@@ -1,7 +1,10 @@
 // Export Excel (ExcelJS, caricato solo quando serve) con l'immagine principale.
 
-import { M, nomeAzienda, nomeFornitore, nomeMacro, nomeCat, nomeColore, fotoPrincipale, stagioneOrdine, statoConsegna, statoRigheOrdine } from './db.js';
-import { GENERI, STATI, stagioneNome, totaleRiga, blobBase64, condividiFile, caricaScript, data } from './util.js';
+import {
+  M, state, nomeAzienda, nomeFornitore, nomeMacro, nomeCat, nomeColore, fotoPrincipale, stagioneOrdine, statoConsegna, statoRigheOrdine,
+  lunghezzaCartellino,
+} from './db.js';
+import { GENERI, STATI, stagioneNome, totaleRiga, blobBase64, condividiFile, caricaScript, data, dataConsegna } from './util.js';
 
 const MAX_IMMAGINI = 400;
 
@@ -24,12 +27,14 @@ export async function esportaRighe(righe, { nomeFile, titolo, prezzi = true }) {
   wb.creator = 'WHITE.7 Buying (demo)';
   const ws = wb.addWorksheet('Articoli', { views: [{ state: 'frozen', ySplit: 2 }] });
 
+  const lim = state.cfg.cartellino.limite;
   const col = [
     ['Società', 12], ['Stagione', 10], ['Fornitore', 26], ['Ordine', 8], ['Codice articolo', 24], ['Vecchio codice', 18],
     ['Categoria', 14], ['Sottocategoria', 18], ['Colore', 11], ['Genere', 8],
     ...(prezzi ? [['Prezzo', 10], ['Sconto %', 8]] : []), ['Quantità', 9], ...(prezzi ? [['Totale riga', 12]] : []),
     ['Taglie', 22], ['Descrizione', 34], ['Composizione', 20], ['Dettagli', 24], ['Note', 24],
-    ['Immagine principale', 14], ['Stato ordine', 13], ['Stato consegna', 14], ['Data inserimento', 12],
+    ...(lim > 0 ? [[`Caratteri cartellino (limite ${lim})`, 12]] : []),
+    ['Immagine principale', 14], ['Stato ordine', 13], ['Stato consegna', 14], ['Consegna entro', 13], ['Data inserimento', 12],
   ];
   ws.columns = col.map(([header, width]) => ({ header, width }));
   ws.spliceRows(1, 0, [titolo || '']);
@@ -40,6 +45,7 @@ export async function esportaRighe(righe, { nomeFile, titolo, prezzi = true }) {
   h.alignment = { vertical: 'middle', wrapText: true };
   h.height = 30;
   const colImg = col.findIndex((c) => c[0] === 'Immagine principale');
+  const colCart = col.findIndex((c) => c[0].startsWith('Caratteri cartellino'));
 
   const ricevutiPerOrdine = new Map();
   let immagini = 0;
@@ -53,10 +59,17 @@ export async function esportaRighe(righe, { nomeFile, titolo, prezzi = true }) {
       r.coloreId ? nomeColore(r.coloreId) : '', GENERI[r.genere] || '',
       ...(prezzi ? [r.prezzo || 0, r.sconto || 0] : []), r.qta || 0, ...(prezzi ? [totaleRiga(r)] : []),
       taglie, r.descrizione || '', r.composizione || '', r.dettagli || '', r.note || '',
-      '', STATI[o.stato]?.nome || o.stato, statoConsegnaRiga(r, o, ricevutiPerOrdine.get(o.id)), data(o.data),
+      ...(lim > 0 ? [lunghezzaCartellino(r)] : []),
+      '', STATI[o.stato]?.nome || o.stato, statoConsegnaRiga(r, o, ricevutiPerOrdine.get(o.id)), dataConsegna(o.consegnaA), data(o.data),
     ];
     const row = ws.addRow(valori);
     row.alignment = { vertical: 'top', wrapText: true };
+    // testo oltre il limite del cartellino: cella evidenziata
+    if (colCart >= 0 && lunghezzaCartellino(r) > lim) {
+      const c = row.getCell(colCart + 1);
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDE2C4' } };
+      c.font = { bold: true, color: { argb: 'FFB45309' } };
+    }
     const f = fotoPrincipale(r.id);
     if (f && immagini < MAX_IMMAGINI) {
       const id = wb.addImage({ base64: await blobBase64(f.thumb), extension: 'jpeg' });
