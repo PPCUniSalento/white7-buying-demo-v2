@@ -742,6 +742,8 @@ export const Articolo = {
             {{ ai.info.etichette }} etichett{{ ai.info.etichette === 1 ? 'a' : 'e' }} lett{{ ai.info.etichette === 1 ? 'a' : 'e' }}</p>
           <p v-for="(t, i) in ai.info.testoLetto" :key="i" class="mono testo-letto">{{ t.join(' · ') }}</p>
           <p v-if="ai.info.fonteCodice">Codice: {{ ai.info.fonteCodice }}.</p>
+          <p v-if="ai.info.fonteComposizione">Composizione: {{ ai.info.fonteComposizione }}.</p>
+          <p v-for="x in ai.info.indicazioni || []" :key="x">Dal glossario: {{ x }}.</p>
           <p v-for="x in ai.info.scartati || []" :key="x">Scartato: {{ x }}.</p>
           <p v-if="ai.info.prova">Foto e proposta salvate in ProveAI/{{ ai.info.prova }} (app File → W7 Buying).</p></details>
         <div class="azioni-pagina"><button class="btn primario" :disabled="!ai.proposte.some(x => x.scelta)" @click="applicaAI"><ic n="check"/> Usa i campi scelti</button>
