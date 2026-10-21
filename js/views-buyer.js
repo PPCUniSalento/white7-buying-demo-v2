@@ -12,7 +12,7 @@ import { esportaRighe } from './excel.js';
 import { proponiDaFoto, statoAI } from './ai.js';
 import {
   RUOLI, DESTINATARI, STATI, euro, euro0, num, perc, data, dataOra, dataConsegna, stagioneNome, stagionePrec, stagioneOrd,
-  totaleRiga, controllaCodice, debounce, inApp,
+  totaleRiga, controllaCodice, debounce, inApp, nativo,
 } from './util.js';
 import { toast } from './comp.js';
 
@@ -560,6 +560,7 @@ export const Articolo = {
       const scelte = ai.proposte.filter((x) => x.scelta);
       for (const x of scelte) x.applica(r);
       r.aiCampi = [...new Set([...(r.aiCampi || []), ...scelte.map((x) => x.k)])];
+      if (ai.info?.prova) r.aiProva = ai.info.prova;
       salva.flush();
       if (scelte.length) {
         await logga('Proposta AI applicata', 'articolo', r.id,
@@ -571,6 +572,15 @@ export const Articolo = {
     async function verificatiAI() {
       const n = (r.aiCampi || []).length;
       r.aiCampi = [];
+      // valori finali del buyer accanto alla proposta (Documenti/ProveAI nell'app): servono a misurare la qualità
+      if (r.aiProva) {
+        const valori = {
+          codiceArticolo: r.codArt || '', sottocategoria: r.catId ? `${M.mac.get(r.macroId)?.nome} > ${M.cat.get(r.catId)?.nome}` : '',
+          colore: r.coloreId ? M.col.get(r.coloreId)?.nome : '', genere: state.cfg.generi.find((g) => g.k === r.genere)?.nome || '',
+          descrizione: r.descrizione || '', composizione: r.composizione || '', dettagli: r.dettagli || '',
+        };
+        nativo('esito', { prova: r.aiProva, valori }).catch(() => {});
+      }
       await logga('Proposta AI verificata dal buyer', 'articolo', r.id, `${r.codArt} – ${n} camp${n === 1 ? 'o' : 'i'}`, { ordineId: p.ordineId });
     }
 
@@ -586,7 +596,7 @@ export const Articolo = {
         return;
       }
       const prima = JSON.parse(snapshot), dopo = copiaPerSalvare();
-      const cambi = Object.keys(dopo).filter((k) => !['modificato', 'nuovo', 'aiCampi'].includes(k) && JSON.stringify(prima[k]) !== JSON.stringify(dopo[k]))
+      const cambi = Object.keys(dopo).filter((k) => !['modificato', 'nuovo', 'aiCampi', 'aiProva'].includes(k) && JSON.stringify(prima[k]) !== JSON.stringify(dopo[k]))
         .map((k) => descriviCambio(k, prima[k], dopo[k]));
       if (cambi.length) await logga('Modificato articolo', 'articolo', r.id, `${r.codArt} – ${cambi.join('; ')}`, { ordineId: p.ordineId });
     });
@@ -731,7 +741,9 @@ export const Articolo = {
           <p>{{ ai.info.modello }} · lettura del testo {{ ai.info.tempi?.lettura }} s · modello {{ ai.info.tempi?.modello }} s ·
             {{ ai.info.etichette }} etichett{{ ai.info.etichette === 1 ? 'a' : 'e' }} lett{{ ai.info.etichette === 1 ? 'a' : 'e' }}</p>
           <p v-for="(t, i) in ai.info.testoLetto" :key="i" class="mono testo-letto">{{ t.join(' · ') }}</p>
-          <p v-for="x in ai.info.scartati || []" :key="x">Scartato: {{ x }}.</p></details>
+          <p v-if="ai.info.fonteCodice">Codice: {{ ai.info.fonteCodice }}.</p>
+          <p v-for="x in ai.info.scartati || []" :key="x">Scartato: {{ x }}.</p>
+          <p v-if="ai.info.prova">Foto e proposta salvate in ProveAI/{{ ai.info.prova }} (app File → W7 Buying).</p></details>
         <div class="azioni-pagina"><button class="btn primario" :disabled="!ai.proposte.some(x => x.scelta)" @click="applicaAI"><ic n="check"/> Usa i campi scelti</button>
           <button class="btn" @click="ai.proposte = null">Annulla</button></div>
       </template>
