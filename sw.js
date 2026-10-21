@@ -4,7 +4,7 @@
 // PREFISSO e all'attivazione si cancellano solo quelle, mai le cache della v1.
 
 const PREFISSO = 'w7v2-';
-const VERSIONE = PREFISSO + '4';
+const VERSIONE = PREFISSO + '5';
 const FILE = [
   './',
   'index.html',

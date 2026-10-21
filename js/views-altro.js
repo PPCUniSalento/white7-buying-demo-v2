@@ -1,10 +1,17 @@
 // Primo avvio, impostazioni, anagrafiche, registro modifiche.
 
 import { M, state, db, importaSeed, ripristina, salvaImpostazioni, stagioni, spazioOccupato, seedVersionePrecedente } from './db.js';
-import { RUOLI, num, dataOra, stagioneNome, stagioneOrd, stagioneSucc, inApp, nativo } from './util.js';
+import { RUOLI, num, dataOra, stagioneNome, stagioneOrd, stagioneSucc, inApp, nativo, bufferDaBase64 } from './util.js';
 import { toast } from './comp.js';
 
-const { ref, computed, onMounted } = Vue;
+const { ref, computed, onMounted, onBeforeUnmount } = Vue;
+
+// Nell'app iOS il selettore di file della vista web non accetta i .gz: si usa quello nativo.
+// Restituisce un ArrayBuffer, oppure null se si annulla.
+async function scegliArchivioApp() {
+  const f = await nativo('scegliArchivio');
+  return f ? bufferDaBase64(f.base64) : null;
+}
 
 async function chiediPersistenza() {
   try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch { /* facoltativo */ }
@@ -23,19 +30,20 @@ export const Setup = {
     const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
     // archivio già caricato nella versione precedente, sullo stesso dispositivo e browser
     const v1 = ref(null), doc = ref(null);
+    // nell'app iOS: archivio copiato nei Documenti dell'app (app File, Finder); si ricontrolla tornando all'app
+    const cercaDoc = async () => { if (inApp()) doc.value = await nativo('archivio').catch(() => null); };
+    const visibile = () => { if (document.visibilityState === 'visible') cercaDoc(); };
     onMounted(async () => {
       v1.value = await seedVersionePrecedente();
-      // nell'app iOS: archivio copiato nei Documenti dell'app (app File, Finder)
-      if (inApp()) doc.value = await nativo('archivio').catch(() => null);
+      await cercaDoc();
+      document.addEventListener('visibilitychange', visibile);
     });
+    onBeforeUnmount(() => document.removeEventListener('visibilitychange', visibile));
     async function daDocumenti() {
       lavoro.value = true;
       errore.value = '';
       try {
-        const bin = atob(doc.value.base64);
-        const u8 = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-        await importaSeed(u8.buffer);
+        await importaSeed(bufferDaBase64(doc.value.base64));
         await chiediPersistenza();
         toast('Archivio caricato');
         location.hash = '#/';
@@ -69,7 +77,22 @@ export const Setup = {
         errore.value = e.message || String(e);
       } finally { lavoro.value = false; }
     }
-    return { inp, lavoro, errore, scelto, ios, v1, daV1, doc, daDocumenti, inApp: inApp() };
+    async function carica() {
+      if (!inApp()) { inp.value.click(); return; }
+      lavoro.value = true;
+      errore.value = '';
+      try {
+        const buf = await scegliArchivioApp();
+        if (!buf) return;
+        await importaSeed(buf);
+        await chiediPersistenza();
+        toast('Archivio caricato');
+        location.hash = '#/';
+      } catch (e) {
+        errore.value = e.message || String(e);
+      } finally { lavoro.value = false; }
+    }
+    return { inp, lavoro, errore, scelto, carica, ios, v1, daV1, doc, daDocumenti, inApp: inApp() };
   },
   template: `<div class="pagina setup">
     <div class="setup-logo">W7</div>
@@ -85,7 +108,7 @@ export const Setup = {
       <button v-if="v1" class="btn primario pieno grande" :disabled="lavoro" @click="daV1">
         <ic n="copy"/> Usa l'archivio già caricato</button>
       <p v-if="v1" class="muted">Su questo dispositivo è già caricato l'archivio della prima versione della demo: si può riusare senza cercare il file.</p>
-      <button class="btn pieno grande" :class="{primario: !v1}" :disabled="lavoro" @click="inp.click()">
+      <button class="btn pieno grande" :class="{primario: !v1 && !doc}" :disabled="lavoro" @click="carica">
         <span v-if="lavoro" class="spin"></span><ic v-else n="download"/> {{ lavoro ? 'Importazione in corso…' : 'Carica archivio' }}</button>
       <input ref="inp" type="file" hidden @change="scelto">
       <p v-if="errore" class="err">{{ errore }}</p>
@@ -121,6 +144,14 @@ export const Altro = {
       lavoro.value = true;
       try { await ripristina(); toast('Dati demo ripristinati'); location.hash = '#/'; } catch (e) { toast(e.message, 'err'); } finally { lavoro.value = false; }
     }
+    async function altroArchivioApp() {
+      if (!confirm('Caricare un altro archivio? I dati attuali verranno sostituiti.')) return;
+      lavoro.value = true;
+      try {
+        const buf = await scegliArchivioApp();
+        if (buf) { await importaSeed(buf); toast('Archivio caricato'); location.hash = '#/'; }
+      } catch (e) { toast(e.message, 'err'); } finally { lavoro.value = false; }
+    }
     async function altroArchivio(ev) {
       const f = ev.target.files?.[0];
       ev.target.value = '';
@@ -132,7 +163,8 @@ export const Altro = {
     const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
     const generi = computed(() => state.cfg.generi.filter((g) => g.attivo !== false));
     const aziende = computed(() => M.aziende.filter((a) => a.attivo !== false));
-    return { spazio, inp, lavoro, info, conteggi, elencoStagioni, salva, reset, altroArchivio, online, standalone, state, M, RUOLI, generi, aziende, num, dataOra, stagioneNome };
+    const scegliAltro = () => (inApp() ? altroArchivioApp() : inp.value.click());
+    return { spazio, inp, lavoro, info, conteggi, elencoStagioni, salva, reset, altroArchivio, scegliAltro, online, standalone, state, M, RUOLI, generi, aziende, num, dataOra, stagioneNome };
   },
   template: `<div class="pagina">
     <page-head titolo="Altro" :sotto="'Ruolo: ' + RUOLI[state.ruolo].nome"/>
@@ -172,7 +204,7 @@ export const Altro = {
       </div>
       <div class="menu-azioni">
         <button @click="reset" :disabled="lavoro"><ic n="back"/> Ripristina i dati demo originali</button>
-        <button @click="inp.click()" :disabled="lavoro"><ic n="download"/> Carica un altro archivio</button>
+        <button @click="scegliAltro" :disabled="lavoro"><ic n="download"/> Carica un altro archivio</button>
       </div>
       <input ref="inp" type="file" hidden @change="altroArchivio">
     </section>

@@ -188,6 +188,14 @@ export async function nativo(azione, dati = {}) {
   return window.webkit.messageHandlers.w7.postMessage({ azione, ...dati });
 }
 
+// File scelto o trovato dal codice nativo ({ nome, base64 }) → ArrayBuffer
+export function bufferDaBase64(b64) {
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8.buffer;
+}
+
 // Condivide un file col menu di sistema; se non disponibile lo scarica.
 export async function condividiFile(blob, nome) {
   if (inApp()) {
