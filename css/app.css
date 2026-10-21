@@ -551,3 +551,17 @@ label.check.fisso { color: var(--muted) !important; }
 .barra-salva span { flex: 1; min-width: 0; color: var(--muted); font-size: 13px; font-weight: 600; }
 @media (min-width: 900px) { .barra-salva { width: min(1180px, 100%); } }
 @media (max-width: 420px) { .barra-salva span { display: none; } .barra-salva .btn { flex: 1; } }
+
+/* ---- AI di Apple nell'app iOS (21/10/2026) ---- */
+.btn-ai { margin-top: 10px; }
+.banner.ai { background: color-mix(in srgb, #8b5cf6 14%, var(--sup)); color: var(--ink); border: 1px solid color-mix(in srgb, #8b5cf6 40%, transparent); font-weight: 500; font-size: 13.5px; }
+.banner.ai .ic { color: #8b5cf6; }
+.banner.ai span { flex: 1; }
+.form > label, .form > .lbl-grp { position: relative; }
+.form > label > .tag-ai, .form > .lbl-grp > .tag-ai { position: absolute; top: 0; right: 0; margin: 0; }
+.tag-ai { font-style: normal; font-size: 10px; font-weight: 800; color: #fff; background: #8b5cf6; border-radius: 4px; padding: 0 4px; margin-left: 6px; vertical-align: 1px; }
+.proposte-ai > li { align-items: flex-start; }
+.proposte-ai b { white-space: normal; font-weight: 600; }
+.info-ai { margin: 10px 0; font-size: 13px; color: var(--muted); }
+.info-ai summary { cursor: pointer; font-weight: 600; }
+.testo-letto { white-space: pre-wrap; margin: 4px 0; }

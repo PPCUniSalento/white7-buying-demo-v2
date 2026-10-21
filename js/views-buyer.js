@@ -9,9 +9,10 @@ import {
 import { apriMessaggio } from './views-arrivi.js';
 import { avvisi } from './analisi.js';
 import { esportaRighe } from './excel.js';
+import { proponiDaFoto, statoAI } from './ai.js';
 import {
   RUOLI, DESTINATARI, STATI, euro, euro0, num, perc, data, dataOra, dataConsegna, stagioneNome, stagionePrec, stagioneOrd,
-  totaleRiga, controllaCodice, debounce,
+  totaleRiga, controllaCodice, debounce, inApp,
 } from './util.js';
 import { toast } from './comp.js';
 
@@ -533,6 +534,46 @@ export const Articolo = {
       nuovoCod.value = '';
     }
 
+    // ---- AI di Apple (solo nell'app iOS): proposte dalle foto, da accettare campo per campo
+    const ai = reactive({ disponibile: inApp() && modificabile, lavoro: false, proposte: null, info: null, errore: '' });
+    const daAI = (k) => (r.aiCampi || []).includes(k);
+    async function compilaDaFoto() {
+      ai.errore = '';
+      ai.proposte = null;
+      const st = await statoAI();
+      if (!st.disponibile || !st.vista) {
+        ai.errore = st.motivo || 'Il modello Apple di questo dispositivo non accetta immagini';
+        ai.proposte = [];
+        return;
+      }
+      ai.lavoro = true;
+      try {
+        const x = await proponiDaFoto(r);
+        ai.proposte = x.proposte;
+        ai.info = x.info;
+      } catch (e) {
+        ai.errore = e.message || String(e);
+        ai.proposte = [];
+      } finally { ai.lavoro = false; }
+    }
+    async function applicaAI() {
+      const scelte = ai.proposte.filter((x) => x.scelta);
+      for (const x of scelte) x.applica(r);
+      r.aiCampi = [...new Set([...(r.aiCampi || []), ...scelte.map((x) => x.k)])];
+      salva.flush();
+      if (scelte.length) {
+        await logga('Proposta AI applicata', 'articolo', r.id,
+          `${r.codArt || '(senza codice)'} – ${scelte.map((x) => x.etichetta.toLowerCase()).join(', ')} · ${ai.info?.modello}, ${ai.info?.tempi?.modello} s`,
+          { ordineId: p.ordineId });
+      }
+      ai.proposte = null;
+    }
+    async function verificatiAI() {
+      const n = (r.aiCampi || []).length;
+      r.aiCampi = [];
+      await logga('Proposta AI verificata dal buyer', 'articolo', r.id, `${r.codArt} – ${n} camp${n === 1 ? 'o' : 'i'}`, { ordineId: p.ordineId });
+    }
+
     let eliminato = false;
     onBeforeUnmount(async () => {
       if (!modificabile || eliminato) return;
@@ -545,7 +586,7 @@ export const Articolo = {
         return;
       }
       const prima = JSON.parse(snapshot), dopo = copiaPerSalvare();
-      const cambi = Object.keys(dopo).filter((k) => !['modificato', 'nuovo'].includes(k) && JSON.stringify(prima[k]) !== JSON.stringify(dopo[k]))
+      const cambi = Object.keys(dopo).filter((k) => !['modificato', 'nuovo', 'aiCampi'].includes(k) && JSON.stringify(prima[k]) !== JSON.stringify(dopo[k]))
         .map((k) => descriviCambio(k, prima[k], dopo[k]));
       if (cambi.length) await logga('Modificato articolo', 'articolo', r.id, `${r.codArt} – ${cambi.join('; ')}`, { ordineId: p.ordineId });
     });
@@ -574,6 +615,7 @@ export const Articolo = {
     return {
       mancante: false, r, ord, modificabile, nuovoCod, macro, categorie, colori, generi, griglie, griglia, taglieVista, distribuisci, erroreCodice, duplicato,
       cartellino, storico, sovrapp, linkRicerca, totale, errori, maiuscolo, aggiungiVecchio, nuovoSimile, elimina, M, state, euro, num, stagioneNome, nomeFornitore,
+      ai, daAI, compilaDaFoto, applicaAI, verificatiAI,
     };
   },
   template: `<div class="pagina con-barra layout-ordine" v-if="!mancante"><div class="col-main">
@@ -581,11 +623,16 @@ export const Articolo = {
 
     <section class="card">
       <foto-articolo :riga-id="r.id" :modificabile="modificabile"/>
+      <button v-if="ai.disponibile" class="btn pieno btn-ai" :disabled="ai.lavoro" @click="compilaDaFoto">
+        <span v-if="ai.lavoro" class="spin"></span><ic v-else n="star"/> {{ ai.lavoro ? 'Analisi delle foto in corso…' : 'Compila dalle foto (AI)' }}</button>
     </section>
+    <div v-if="r.aiCampi && r.aiCampi.length" class="banner ai"><ic n="star"/>
+      <span>{{ r.aiCampi.length }} camp{{ r.aiCampi.length === 1 ? 'o proposto' : 'i proposti' }} dall'AI (segnati «AI»): controllali.</span>
+      <button v-if="modificabile" class="btn piccolo" @click="verificatiAI">Verificati</button></div>
 
     <section class="card">
       <div class="form">
-        <label class="largo">Codice articolo *
+        <label class="largo">Codice articolo *<i v-if="daAI('codArt')" class="tag-ai">AI</i>
           <input class="inp mono" v-model="r.codArt" @blur="maiuscolo" :disabled="!modificabile" autocapitalize="characters"
             autocomplete="off" spellcheck="false" placeholder="CODICETESSUTO COLORE">
           <small v-if="erroreCodice" class="err">{{ erroreCodice }}</small>
@@ -601,14 +648,14 @@ export const Articolo = {
           <div v-if="modificabile" class="riga-inp"><input class="inp mono" v-model="nuovoCod" placeholder="Vecchio codice" @keyup.enter="aggiungiVecchio">
             <button class="btn" @click="aggiungiVecchio">Aggiungi</button></div>
         </div>
-        <label>Categoria{{ $ob('macroId') }}<select class="inp" v-model.number="r.macroId" :disabled="!modificabile">
+        <label>Categoria{{ $ob('macroId') }}<i v-if="daAI('catId')" class="tag-ai">AI</i><select class="inp" v-model.number="r.macroId" :disabled="!modificabile">
           <option :value="null" disabled>Seleziona…</option><option v-for="m in macro" :value="m.id">{{ m.nome }}</option></select></label>
-        <label>Sottocategoria{{ $ob('catId') }}<select class="inp" v-model.number="r.catId" :disabled="!modificabile || !r.macroId">
+        <label>Sottocategoria{{ $ob('catId') }}<i v-if="daAI('catId')" class="tag-ai">AI</i><select class="inp" v-model.number="r.catId" :disabled="!modificabile || !r.macroId">
           <option :value="null" disabled>Seleziona…</option><option v-for="c in categorie" :value="c.id">{{ c.nome }}</option></select></label>
-        <label>Colore{{ $ob('coloreId') }}<select class="inp" v-model.number="r.coloreId" :disabled="!modificabile">
+        <label>Colore{{ $ob('coloreId') }}<i v-if="daAI('coloreId')" class="tag-ai">AI</i><select class="inp" v-model.number="r.coloreId" :disabled="!modificabile">
           <option :value="null" disabled>Seleziona…</option><option v-for="c in colori" :value="c.id">{{ c.nome }}</option></select>
           <small v-if="r.coloreDedotto" class="aiuto">dedotto dalla descrizione</small></label>
-        <div class="lbl-grp largo">Genere{{ $ob('genere') }}<div class="seg">
+        <div class="lbl-grp largo">Genere{{ $ob('genere') }}<i v-if="daAI('genere')" class="tag-ai">AI</i><div class="seg">
           <button v-for="(g, k) in generi" :key="k" :class="{on: r.genere === k}" :disabled="!modificabile" @click="r.genere = k">{{ g }}</button></div></div>
       </div>
     </section>
@@ -644,9 +691,9 @@ export const Articolo = {
       <div class="card-h"><h2>Descrizione e note</h2>
         <small v-if="cartellino.lim > 0" class="cont-cart" :class="{oltre: cartellino.oltre}">cartellino {{ cartellino.n }}/{{ cartellino.lim }}</small></div>
       <div class="form">
-        <label class="largo">Descrizione commerciale{{ $ob('descrizione') }}<input class="inp" v-model="r.descrizione" :disabled="!modificabile"></label>
-        <label class="largo">Composizione / materiali{{ $ob('composizione') }}<input class="inp" v-model="r.composizione" :disabled="!modificabile"></label>
-        <label class="largo">Dettagli<textarea class="inp" rows="3" v-model="r.dettagli" :disabled="!modificabile"></textarea></label>
+        <label class="largo">Descrizione commerciale{{ $ob('descrizione') }}<i v-if="daAI('descrizione')" class="tag-ai">AI</i><input class="inp" v-model="r.descrizione" :disabled="!modificabile"></label>
+        <label class="largo">Composizione / materiali{{ $ob('composizione') }}<i v-if="daAI('composizione')" class="tag-ai">AI</i><input class="inp" v-model="r.composizione" :disabled="!modificabile"></label>
+        <label class="largo">Dettagli<i v-if="daAI('dettagli')" class="tag-ai">AI</i><textarea class="inp" rows="3" v-model="r.dettagli" :disabled="!modificabile"></textarea></label>
         <label class="largo">Misure<input class="inp" v-model="r.misure" :disabled="!modificabile"></label>
         <label class="largo">Note operative (da verificare alla consegna)
           <textarea class="inp nota" rows="3" v-model="r.note" :disabled="!modificabile" placeholder="Es. il fornitore ha promesso di correggere il difetto del campione sul collo"></textarea></label>
@@ -669,6 +716,26 @@ export const Articolo = {
     </div>
     <pannello-riepilogo :ordine-id="ord.id"/>
     <barra-totale :ordine-id="ord.id"/>
+    <sheet v-if="ai.proposte" titolo="Proposte dell'AI" alto @chiudi="ai.proposte = null">
+      <p v-if="ai.errore" class="err">{{ ai.errore }}</p>
+      <template v-else>
+        <p class="muted">Scegli cosa usare. I campi già compilati da te non sono preselezionati.</p>
+        <ul class="lista proposte-ai">
+          <li v-for="x in ai.proposte" :key="x.k" @click="x.scelta = !x.scelta">
+            <input type="checkbox" :checked="x.scelta" @click.stop="x.scelta = !x.scelta">
+            <div class="grow"><small>{{ x.etichetta }}</small><b>{{ x.proposto }}</b>
+              <small v-if="x.attuale" class="det">ora: {{ x.attuale }}</small></div></li>
+          <li v-if="!ai.proposte.length" class="vuoto">Nessuna proposta diversa da quanto già inserito.</li>
+        </ul>
+        <details v-if="ai.info" class="info-ai"><summary>Come è stata fatta la proposta</summary>
+          <p>{{ ai.info.modello }} · lettura del testo {{ ai.info.tempi?.lettura }} s · modello {{ ai.info.tempi?.modello }} s ·
+            {{ ai.info.etichette }} etichett{{ ai.info.etichette === 1 ? 'a' : 'e' }} lett{{ ai.info.etichette === 1 ? 'a' : 'e' }}</p>
+          <p v-for="(t, i) in ai.info.testoLetto" :key="i" class="mono testo-letto">{{ t.join(' · ') }}</p>
+          <p v-for="x in ai.info.scartati || []" :key="x">Scartato: {{ x }}.</p></details>
+        <div class="azioni-pagina"><button class="btn primario" :disabled="!ai.proposte.some(x => x.scelta)" @click="applicaAI"><ic n="check"/> Usa i campi scelti</button>
+          <button class="btn" @click="ai.proposte = null">Annulla</button></div>
+      </template>
+    </sheet>
   </div>
   <div v-else class="pagina"><page-head titolo="Articolo non trovato" indietro="#/ordini"/></div>`,
 };

@@ -1,7 +1,7 @@
 // Primo avvio, impostazioni, anagrafiche, registro modifiche.
 
 import { M, state, db, importaSeed, ripristina, salvaImpostazioni, stagioni, spazioOccupato, seedVersionePrecedente } from './db.js';
-import { RUOLI, num, dataOra, stagioneNome, stagioneOrd, stagioneSucc } from './util.js';
+import { RUOLI, num, dataOra, stagioneNome, stagioneOrd, stagioneSucc, inApp, nativo } from './util.js';
 import { toast } from './comp.js';
 
 const { ref, computed, onMounted } = Vue;
@@ -22,8 +22,27 @@ export const Setup = {
     const inp = ref(null), lavoro = ref(false), errore = ref('');
     const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
     // archivio già caricato nella versione precedente, sullo stesso dispositivo e browser
-    const v1 = ref(null);
-    onMounted(async () => { v1.value = await seedVersionePrecedente(); });
+    const v1 = ref(null), doc = ref(null);
+    onMounted(async () => {
+      v1.value = await seedVersionePrecedente();
+      // nell'app iOS: archivio copiato nei Documenti dell'app (app File, Finder)
+      if (inApp()) doc.value = await nativo('archivio').catch(() => null);
+    });
+    async function daDocumenti() {
+      lavoro.value = true;
+      errore.value = '';
+      try {
+        const bin = atob(doc.value.base64);
+        const u8 = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+        await importaSeed(u8.buffer);
+        await chiediPersistenza();
+        toast('Archivio caricato');
+        location.hash = '#/';
+      } catch (e) {
+        errore.value = e.message || String(e);
+      } finally { lavoro.value = false; }
+    }
     async function daV1() {
       lavoro.value = true;
       errore.value = '';
@@ -50,7 +69,7 @@ export const Setup = {
         errore.value = e.message || String(e);
       } finally { lavoro.value = false; }
     }
-    return { inp, lavoro, errore, scelto, ios, v1, daV1 };
+    return { inp, lavoro, errore, scelto, ios, v1, daV1, doc, daDocumenti, inApp: inApp() };
   },
   template: `<div class="pagina setup">
     <div class="setup-logo">W7</div>
@@ -60,6 +79,9 @@ export const Setup = {
       <h2>1. Carica l'archivio dati</h2>
       <p>Seleziona il file <b class="mono">seed_white7.json.gz</b> (dalla cartella OneDrive del progetto, da File o da AirDrop).
         I dati restano solo su questo dispositivo: l'app non li invia a nessun server.</p>
+      <button v-if="doc" class="btn primario pieno grande" :disabled="lavoro" @click="daDocumenti">
+        <ic n="download"/> Usa l'archivio nei Documenti</button>
+      <p v-if="doc" class="muted">Trovato <span class="mono">{{ doc.nome }}</span> nei Documenti dell'app.</p>
       <button v-if="v1" class="btn primario pieno grande" :disabled="lavoro" @click="daV1">
         <ic n="copy"/> Usa l'archivio già caricato</button>
       <p v-if="v1" class="muted">Su questo dispositivo è già caricato l'archivio della prima versione della demo: si può riusare senza cercare il file.</p>
@@ -68,7 +90,7 @@ export const Setup = {
       <input ref="inp" type="file" hidden @change="scelto">
       <p v-if="errore" class="err">{{ errore }}</p>
     </section>
-    <section class="card">
+    <section v-if="!inApp" class="card">
       <h2>2. Installa l'app</h2>
       <p v-if="ios">In Safari: tocca <b>Condividi</b> e poi <b>Aggiungi alla schermata Home</b>. Aprendola dall'icona funziona anche in modalità aereo.
         Nota: su iPhone l'app installata e Safari hanno archivi separati, quindi carica l'archivio dall'app installata.</p>

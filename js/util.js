@@ -180,8 +180,20 @@ export function blobBase64(blob) {
   });
 }
 
+// ---------- app iOS (guscio nativo con il modulo AI, vedi app-ios/) ----------
+// Nella pagina caricata dall'app esiste il ponte "w7"; nel browser no.
+export const inApp = () => !!window.webkit?.messageHandlers?.w7;
+export async function nativo(azione, dati = {}) {
+  if (!inApp()) throw new Error('Funzione disponibile solo nell\'app');
+  return window.webkit.messageHandlers.w7.postMessage({ azione, ...dati });
+}
+
 // Condivide un file col menu di sistema; se non disponibile lo scarica.
 export async function condividiFile(blob, nome) {
+  if (inApp()) {
+    await nativo('condividi', { nome, base64: await blobBase64(blob) });
+    return;
+  }
   const file = new File([blob], nome, { type: blob.type });
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
