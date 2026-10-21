@@ -31,7 +31,8 @@ export async function proponiDaFoto(r) {
   const proposte = [];
   const aggiungi = (k, etichetta, attuale, proposto, applica) => {
     if (proposto == null || proposto === '' || proposto === attuale) return;
-    proposte.push({ k, etichetta, attuale: attuale || '', proposto, applica, scelta: !attuale });
+    // i dettagli scritti dal modello del telefono sono spesso imprecisi (prove del 21/10/2026): non preselezionati
+    proposte.push({ k, etichetta, attuale: attuale || '', proposto, applica, scelta: !attuale && k !== 'dettagli' });
   };
   if (c.codiceArticolo) {
     const cod = String(c.codiceArticolo).toUpperCase().replace(/\s+/g, ' ').trim();
