@@ -112,27 +112,41 @@ export async function creaOrdineProva() {
     if (!doc) return 'archivio dati non caricato';
     await importaSeed(bufferDaBase64(doc.base64));
   }
-  const esistente = [...M.ord.values()].find((o) => o.note === NOTA_PROVA);
-  if (esistente) { location.hash = `#/ordine/${esistente.id}`; return `ordine di prova già presente: n. ${esistente.id}`; }
   const cartelle = await nativo('fotoProva');
   if (!cartelle?.length) return 'nessuna foto di prova nel pacchetto dell\'app';
-  const forn = M.fornitori.find((f) => f.nome === 'PROVE AI – FOTO DEL CLIENTE') || await nuovoFornitore('PROVE AI – FOTO DEL CLIENTE');
-  const base = await nuovoOrdine();
-  const o = await salvaOrdine({ ...base, fornitoreId: forn.id, note: NOTA_PROVA });
-  for (const nome of cartelle) {
+  // ordine già creato: si aggiungono solo le cartelle nuove (quelle già presenti sono segnate negli articoli
+  // con provaCartella o, per il primo ordine del 22/10/2026, elencate nel registro)
+  let o = [...M.ord.values()].find((x) => x.note === NOTA_PROVA);
+  const presenti = new Set();
+  if (o) {
+    for (const r of righeOrdine(o.id)) if (r.provaCartella) presenti.add(r.provaCartella);
+    const voce = M.log.find((e) => e.entita === 'ordine' && e.entitaId === o.id && e.azione.startsWith('Creato ordine di prova'));
+    for (const c of (voce?.dettagli.split('articoli: ')[1] || '').split(', ')) if (c) presenti.add(c);
+  } else {
+    const forn = M.fornitori.find((f) => f.nome === 'PROVE AI – FOTO DEL CLIENTE') || await nuovoFornitore('PROVE AI – FOTO DEL CLIENTE');
+    const base = await nuovoOrdine();
+    o = await salvaOrdine({ ...base, fornitoreId: forn.id, note: NOTA_PROVA });
+  }
+  const nuove = cartelle.filter((c) => !presenti.has(c));
+  if (o.stato !== 'bozza' && nuove.length) return `l'ordine di prova n. ${o.id} non è più in bozza: articoli non aggiunti`;
+  for (const nome of nuove) {
     const r = await salvaRiga({
       ordineId: o.id, codArt: '', continuativo: false, vecchiCodici: [], macroId: null, catId: null, coloreId: null,
       genere: state.imp.genereDefault, prezzo: null, sconto: 0, qta: null, grigliaId: null, taglie: null,
-      descrizione: '', dettagli: '', misure: '', composizione: '', note: '', nuovo: false,
+      descrizione: '', dettagli: '', misure: '', composizione: '', note: '', nuovo: false, provaCartella: nome,
     });
     for (const b64 of await nativo('fotoProva', { cartella: nome })) {
       await aggiungiFoto(r.id, await elaboraFoto(new Blob([bufferDaBase64(b64)], { type: 'image/jpeg' })));
     }
   }
-  await logga('Creato ordine di prova con le foto del cliente', 'ordine', o.id, `${cartelle.length} articoli: ${cartelle.join(', ')}`);
+  if (nuove.length) {
+    await logga(presenti.size ? 'Aggiunti articoli all\'ordine di prova' : 'Creato ordine di prova con le foto del cliente', 'ordine', o.id,
+      `${nuove.length} articoli: ${nuove.join(', ')}`);
+  }
   state.ruolo = 'buyer';
   scriviLocale('ruolo', 'buyer');
   location.hash = `#/ordine/${o.id}`;
-  return `creato l'ordine n. ${o.id} con ${cartelle.length} articoli`;
+  if (!nuove.length) return `ordine di prova n. ${o.id}: nessuna cartella nuova`;
+  return `ordine n. ${o.id}: ${presenti.size ? 'aggiunti' : 'creati'} ${nuove.length} articoli (${nuove.join(', ')})`;
 }
 if (typeof window !== 'undefined') window.w7CreaOrdineProva = creaOrdineProva;

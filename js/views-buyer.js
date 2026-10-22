@@ -613,7 +613,7 @@ export const Articolo = {
         return;
       }
       const prima = JSON.parse(snapshot), dopo = copiaPerSalvare();
-      const cambi = Object.keys(dopo).filter((k) => !['modificato', 'nuovo', 'aiCampi', 'aiProva', 'aiOrigine'].includes(k) && JSON.stringify(prima[k]) !== JSON.stringify(dopo[k]))
+      const cambi = Object.keys(dopo).filter((k) => !['modificato', 'nuovo', 'aiCampi', 'aiProva', 'aiOrigine', 'provaCartella'].includes(k) && JSON.stringify(prima[k]) !== JSON.stringify(dopo[k]))
         .map((k) => descriviCambio(k, prima[k], dopo[k]));
       if (cambi.length) await logga('Modificato articolo', 'articolo', r.id, `${r.codArt} – ${cambi.join('; ')}`, { ordineId: p.ordineId });
     });
