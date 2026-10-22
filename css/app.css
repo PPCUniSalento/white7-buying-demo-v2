@@ -565,3 +565,5 @@ label.check.fisso { color: var(--muted) !important; }
 .info-ai { margin: 10px 0; font-size: 13px; color: var(--muted); }
 .info-ai summary { cursor: pointer; font-weight: 600; }
 .testo-letto { white-space: pre-wrap; margin: 4px 0; }
+.btn-ai-azzera { margin-top: 8px; color: var(--muted); }
+.ai-mini { align-self: flex-start; margin-top: 3px; font-size: 11.5px; font-weight: 700; color: #fff; background: #8b5cf6; border-radius: 6px; padding: 1px 6px; }

@@ -9,7 +9,7 @@ import {
 import { apriMessaggio } from './views-arrivi.js';
 import { avvisi } from './analisi.js';
 import { esportaRighe } from './excel.js';
-import { proponiDaFoto, statoAI } from './ai.js';
+import { proponiDaFoto, statoAI, campiAI, azzeraAI, azzeraAIOrdine } from './ai.js';
 import {
   RUOLI, DESTINATARI, STATI, euro, euro0, num, perc, data, dataOra, dataConsegna, stagioneNome, stagionePrec, stagioneOrd,
   totaleRiga, controllaCodice, debounce, inApp, nativo,
@@ -268,6 +268,12 @@ export const Ordine = {
     const righe = computed(() => { state.rev; return [...righeOrdine(p.id)]; });
     const nErr = (r) => { state.rev; return erroriRiga(r).length; };
     const nFoto = (r) => { state.rev; return fotoRiga(r.id).length; };
+    const nConAI = computed(() => { state.rev; return righe.value.filter((r) => campiAI(r).length).length; });
+    async function azzeraAITutti() {
+      if (!confirm(`Azzerare i campi compilati dall'AI in ${nConAI.value} articol${nConAI.value === 1 ? 'o' : 'i'}? Le foto restano.`)) return;
+      const n = await azzeraAIOrdine(p.id);
+      toast(`Campi dell'AI azzerati in ${n} articol${n === 1 ? 'o' : 'i'}`);
+    }
     const cartellino = (r) => { state.rev; return oltreCartellino(r); };
     const log = computed(() => {
       state.rev;
@@ -318,7 +324,7 @@ export const Ordine = {
       });
     }
     return {
-      mancante: false, o, modificabile, errori, avvisi, cronologia, esporta, stagioneSel, righe, nErr, nFoto, cartellino, log, distinte,
+      mancante: false, o, modificabile, errori, avvisi, cronologia, esporta, stagioneSel, righe, nErr, nFoto, cartellino, log, distinte, nConAI, azzeraAITutti,
       nuovoArticolo, conferma, riapri, elimina, excel, M, state, stagioni: stagioniDisponibili(), aziende: computed(() => selezionabili(M.aziende, o.aziendaId)),
       stagioneNome, nomeFornitore, nomeCat, nomeColore, euro, num, data, dataOra, totaleRiga, RUOLI, elencoPagamenti,
     };
@@ -363,6 +369,7 @@ export const Ordine = {
             <small>{{ r.catId ? nomeCat(r.catId) : '–' }} · {{ r.coloreId ? nomeColore(r.coloreId) : '–' }}</small>
             <span v-if="modificabile && nErr(r)" class="err-mini">{{ nErr(r) }} da completare</span>
             <span v-else-if="!o.storico && nFoto(r) < state.cfg.minFoto" class="err-mini">{{ nFoto(r) }} foto</span>
+            <span v-if="r.aiCampi && r.aiCampi.length" class="ai-mini">AI da verificare</span>
             <span v-if="!o.storico && cartellino(r)" class="avv-mini">cartellino {{ cartellino(r) }}/{{ state.cfg.cartellino.limite }} caratteri</span></div>
           <div class="dx"><b>{{ num(r.qta) }} pz</b><small>{{ euro(r.prezzo) }}</small><small v-if="r.sconto">−{{ r.sconto }}%</small>
             <b>{{ euro(totaleRiga(r)) }}</b></div></li>
@@ -375,6 +382,7 @@ export const Ordine = {
       <a v-if="o.stato === 'confermato'" class="btn primario" :href="'#/trasmissione?sel=' + o.id"><ic n="send"/> Trasmetti</a>
       <button class="btn" @click="esporta = true" :disabled="!righe.length"><ic n="download"/> Excel</button>
       <button class="btn" @click="cronologia = true"><ic n="list"/> Cronologia</button>
+      <button v-if="modificabile && nConAI" class="btn" @click="azzeraAITutti"><ic n="back"/> Azzera AI ({{ nConAI }})</button>
       <button v-if="o.stato === 'bozza'" class="btn rosso" @click="elimina"><ic n="trash"/> Elimina bozza</button>
     </div>
 
@@ -560,6 +568,7 @@ export const Articolo = {
       const scelte = ai.proposte.filter((x) => x.scelta);
       for (const x of scelte) x.applica(r);
       r.aiCampi = [...new Set([...(r.aiCampi || []), ...scelte.map((x) => x.k)])];
+      r.aiOrigine = [...new Set([...(r.aiOrigine || []), ...scelte.map((x) => x.k)])];
       if (ai.info?.prova) r.aiProva = ai.info.prova;
       salva.flush();
       if (scelte.length) {
@@ -568,6 +577,14 @@ export const Articolo = {
           { ordineId: p.ordineId });
       }
       ai.proposte = null;
+    }
+    const conAI = computed(() => campiAI(r).length > 0);
+    async function azzeraAIArticolo() {
+      if (!confirm('Azzerare i campi compilati dall\'AI? Codice, categoria, colore, descrizione, composizione e dettagli presi dall\'AI tornano vuoti; le foto restano.')) return;
+      const campi = azzeraAI(r);
+      salva.flush();
+      await logga('Azzerati i campi dell\'AI', 'articolo', r.id, campi.join(', '), { ordineId: p.ordineId });
+      toast('Campi dell\'AI azzerati: si può rifare la compilazione dalle foto');
     }
     async function verificatiAI() {
       const n = (r.aiCampi || []).length;
@@ -596,7 +613,7 @@ export const Articolo = {
         return;
       }
       const prima = JSON.parse(snapshot), dopo = copiaPerSalvare();
-      const cambi = Object.keys(dopo).filter((k) => !['modificato', 'nuovo', 'aiCampi', 'aiProva'].includes(k) && JSON.stringify(prima[k]) !== JSON.stringify(dopo[k]))
+      const cambi = Object.keys(dopo).filter((k) => !['modificato', 'nuovo', 'aiCampi', 'aiProva', 'aiOrigine'].includes(k) && JSON.stringify(prima[k]) !== JSON.stringify(dopo[k]))
         .map((k) => descriviCambio(k, prima[k], dopo[k]));
       if (cambi.length) await logga('Modificato articolo', 'articolo', r.id, `${r.codArt} – ${cambi.join('; ')}`, { ordineId: p.ordineId });
     });
@@ -625,7 +642,7 @@ export const Articolo = {
     return {
       mancante: false, r, ord, modificabile, nuovoCod, macro, categorie, colori, generi, griglie, griglia, taglieVista, distribuisci, erroreCodice, duplicato,
       cartellino, storico, sovrapp, linkRicerca, totale, errori, maiuscolo, aggiungiVecchio, nuovoSimile, elimina, M, state, euro, num, stagioneNome, nomeFornitore,
-      ai, daAI, compilaDaFoto, applicaAI, verificatiAI,
+      ai, daAI, compilaDaFoto, applicaAI, verificatiAI, conAI, azzeraAIArticolo,
     };
   },
   template: `<div class="pagina con-barra layout-ordine" v-if="!mancante"><div class="col-main">
@@ -635,6 +652,8 @@ export const Articolo = {
       <foto-articolo :riga-id="r.id" :modificabile="modificabile"/>
       <button v-if="ai.disponibile" class="btn pieno btn-ai" :disabled="ai.lavoro" @click="compilaDaFoto">
         <span v-if="ai.lavoro" class="spin"></span><ic v-else n="star"/> {{ ai.lavoro ? 'Analisi delle foto in corso…' : 'Compila dalle foto (AI)' }}</button>
+      <button v-if="modificabile && conAI" class="btn pieno btn-ai-azzera" :disabled="ai.lavoro" @click="azzeraAIArticolo">
+        <ic n="back"/> Azzera i campi dell'AI</button>
     </section>
     <div v-if="r.aiCampi && r.aiCampi.length" class="banner ai"><ic n="star"/>
       <span>{{ r.aiCampi.length }} camp{{ r.aiCampi.length === 1 ? 'o proposto' : 'i proposti' }} dall'AI (segnati «AI»): controllali.</span>
