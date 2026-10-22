@@ -3,7 +3,7 @@
 // i campi proposti, che il buyer accetta o scarta uno per uno (supervisione del progetto tecnico).
 
 import {
-  M, state, fotoRiga, attivo, righeOrdine, salvaRiga, salvaOrdine, nuovoOrdine, nuovoFornitore, aggiungiFoto, logga, scriviLocale, importaSeed,
+  M, state, fotoRiga, attivo, righeOrdine, salvaRiga, salvaOrdine, nuovoOrdine, nuovoFornitore, aggiungiFoto, eliminaFoto, logga, scriviLocale, importaSeed,
 } from './db.js';
 import { blobBase64, nativo, elaboraFoto, bufferDaBase64 } from './util.js';
 
@@ -139,6 +139,20 @@ export async function creaOrdineProva() {
       await aggiungiFoto(r.id, await elaboraFoto(new Blob([bufferDaBase64(b64)], { type: 'image/jpeg' })));
     }
   }
+  // cartelle cambiate (foto spostate fra un articolo e l'altro): si sostituiscono le foto e si azzerano i campi dell'AI
+  const aggiornati = [];
+  if (o.stato === 'bozza') {
+    for (const r of righeOrdine(o.id)) {
+      if (!r.provaCartella || !cartelle.includes(r.provaCartella) || nuove.includes(r.provaCartella)) continue;
+      const foto = await nativo('fotoProva', { cartella: r.provaCartella });
+      if (foto.length === fotoRiga(r.id).length) continue;
+      for (const f of [...fotoRiga(r.id)]) await eliminaFoto(f.id);
+      for (const b64 of foto) await aggiungiFoto(r.id, await elaboraFoto(new Blob([bufferDaBase64(b64)], { type: 'image/jpeg' })));
+      if (campiAI(r).length) { const x = { ...r }; azzeraAI(x); await salvaRiga(x); }
+      aggiornati.push(r.provaCartella);
+    }
+  }
+  if (aggiornati.length) await logga('Foto aggiornate nell\'ordine di prova', 'ordine', o.id, aggiornati.join(', '));
   if (nuove.length) {
     await logga(presenti.size ? 'Aggiunti articoli all\'ordine di prova' : 'Creato ordine di prova con le foto del cliente', 'ordine', o.id,
       `${nuove.length} articoli: ${nuove.join(', ')}`);
@@ -146,7 +160,7 @@ export async function creaOrdineProva() {
   state.ruolo = 'buyer';
   scriviLocale('ruolo', 'buyer');
   location.hash = `#/ordine/${o.id}`;
-  if (!nuove.length) return `ordine di prova n. ${o.id}: nessuna cartella nuova`;
+  if (!nuove.length) return `ordine di prova n. ${o.id}: nessuna cartella nuova${aggiornati.length ? `, foto aggiornate in ${aggiornati.join(', ')}` : ''}`;
   return `ordine n. ${o.id}: ${presenti.size ? 'aggiunti' : 'creati'} ${nuove.length} articoli (${nuove.join(', ')})`;
 }
 if (typeof window !== 'undefined') window.w7CreaOrdineProva = creaOrdineProva;
