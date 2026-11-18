@@ -6,7 +6,7 @@ import {
   M, righeOrdine, fotoRiga, nomeAzienda, nomeFornitore, nomeMacro, nomeCat, nomeColore, stagioneOrdine, taglieOrdinate,
 } from './db.js';
 import {
-  GENERI, STATI, SENZA_TAGLIA, stagioneNome, euro, num, data, dataOra, dataConsegna, totaleRiga, lordoRiga, prezzoNetto,
+  GENERI, STATI, RUOLI, SENZA_TAGLIA, stagioneNome, euro, num, data, dataOra, dataConsegna, totaleRiga, lordoRiga, prezzoNetto,
   scontoComm, scontoFin, testoReso, testoAcconto, blobBase64, condividiFile, caricaScript, oraIso,
 } from './util.js';
 
@@ -196,4 +196,130 @@ export async function esportaPdf(ordineId, { prezzi = false } = {}) {
   const blob = doc.output('blob');
   const nome = `Ordine ${o.id} ${nomeFornitore(o.fornitoreId)}${prezzi ? '' : ' (senza prezzi)'}.pdf`;
   await condividiFile(blob, nome.replace(/[\\/:*?"<>|]/g, '-'));
+}
+
+// ---------------------------------------------------------------- distinta di ricezione
+// PDF di una distinta (proposta del 01/11/2026: le distinte si vedevano solo a schermo). A4 verticale:
+// testata, eventuale chiusura con differenze, poi per ogni articolo la tabella delle taglie (ordinato,
+// già ricevuto, questa consegna, totale) con le celle diverse dall'ordinato evidenziate e le segnalazioni.
+// prezzi: valore ordinato e ricevuto (solo amministrazione e buyer).
+const SENZA = SENZA_TAGLIA;
+const nomeStatoRiga = (s) => (s ? s[0].toUpperCase() + s.slice(1) : '');
+
+export async function esportaPdfDistinta(distintaId, { prezzi = false } = {}) {
+  await caricaScript('vendor/jspdf.umd.min.js');
+  const { jsPDF } = window.jspdf;
+  const d = M.distinte.get(distintaId);
+  const o = M.ord.get(d.ordineId);
+  const PW = 210, PH = 297, larg = PW - 2 * MARG;
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const fornitore = nomeFornitore(o?.fornitoreId);
+  doc.setProperties({ title: `Distinta ordine ${d.ordineId} ${fornitore}`, creator: 'WHITE.7 Buying (demo)' });
+  const T = (t, x, y, opz) => doc.text(Array.isArray(t) ? t.map(pulisci) : pulisci(t), x, y, opz);
+  const testoLargo = (t, l) => doc.splitTextToSize(pulisci(t), l);
+
+  let y = MARG;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(15);
+  T(`Distinta ${d.tipo} - ordine n. ${d.ordineId}`, MARG, y + 5);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(90);
+  T(`${fornitore} - ${o ? stagioneNome(stagioneOrdine(o)) : ''}`, MARG, y + 11);
+  doc.setFontSize(8.5);
+  T(prezzi ? 'Con i valori economici' : 'Senza dati economici', PW - MARG, y + 5, { align: 'right' });
+  doc.setTextColor(0);
+  y += 18;
+
+  const kv = [
+    ['Data', dataOra(d.data)], ['Compilata da', RUOLI[d.ruolo]?.nome || d.ruolo],
+    ['Capi in questa consegna', num(d.pezziRicevuti)],
+    ['Conformi sul totale', `${num(d.pezziConformi)} / ${num(d.pezziOrdinati)} - ${Math.round(d.perc)}%`],
+  ];
+  if (prezzi) {
+    kv.push(['Valore ordinato', eur(d.valoreOrdinato)]);
+    kv.push(['Valore ricevuto conforme', `${eur(d.valoreRicevuto)} - ${Math.round(d.valoreOrdinato ? d.valoreRicevuto / d.valoreOrdinato * 100 : 0)}%`]);
+  }
+  const colW = larg / 3;
+  kv.forEach(([k, v], i) => {
+    const x = MARG + (i % 3) * colW, yy = y + Math.floor(i / 3) * 11;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(110); T(k, x, yy);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(0); T(v, x, yy + 4.5);
+  });
+  y += Math.ceil(kv.length / 3) * 11 + 2;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+  if (o?.chiusura?.conDifferenze) {
+    doc.setTextColor(150, 70, 0); doc.setFont('helvetica', 'bold');
+    const c = o.chiusura;
+    const l = testoLargo(`Ordine chiuso con differenze da ${RUOLI[c.ruolo]?.nome || c.ruolo} il ${dataOra(c.data)}: mancanti ${c.mancanti}, eccedenze ${c.eccedenze}${c.nota ? ` - "${c.nota}"` : ''}`, larg);
+    T(l, MARG, y); y += l.length * 4 + 2;
+    doc.setTextColor(0); doc.setFont('helvetica', 'normal');
+  }
+  if (d.note) { const l = testoLargo(`Note sulla consegna: ${d.note}`, larg); T(l, MARG, y); y += l.length * 4 + 2; }
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(10);
+  T(`${d.righe.length} articol${d.righe.length === 1 ? 'o' : 'i'} - ${d.discrepanze || 0} discrepanze di taglia - ${d.problemi || 0} segnalazioni`, MARG, y + 2);
+  y += 5;
+  doc.setDrawColor(30); doc.setLineWidth(0.4); doc.line(MARG, y, PW - MARG, y);
+  y += 5;
+
+  const intestazione = () => {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(110);
+    T(`Distinta ${d.tipo} - ordine n. ${d.ordineId} - ${fornitore} - ${dataOra(d.data)}`, MARG, MARG);
+    doc.setTextColor(0);
+    return MARG + 6;
+  };
+
+  const ETI = 30;   // colonna delle etichette della tabella
+  for (const r of d.righe) {
+    const taglie = [...new Set([...Object.keys(r.ordinate || {}), ...Object.keys(r.cumulate || {})])];
+    const conPrima = Object.values(r.prima || {}).some((q) => q > 0);
+    const righeTab = [['Ordinato', r.ordinate], ...(conPrima ? [['Già ricevuto', r.prima]] : []), ['Questa consegna', r.ricevute], ...(conPrima ? [['Totale', r.cumulate]] : [])];
+    const confronta = conPrima ? 'Totale' : 'Questa consegna';
+    const cella = Math.min(12, (larg - ETI) / Math.max(1, taglie.length));
+    doc.setFontSize(8.5);
+    const probl = r.problema ? testoLargo(`${r.problema}${r.nota ? ': ' + r.nota : ''}`, larg) : [];
+    const diffTxt = r.stato !== 'conforme' && r.descr ? testoLargo(`Rispetto all'ordinato: ${r.descr}`, larg) : [];
+    const h = 10 + 5 * (righeTab.length + 1) + 4 * (probl.length + diffTxt.length) + 5;
+    if (y + h > PH - MARG - 6) { doc.addPage(); y = intestazione(); }
+
+    doc.setFont('courier', 'bold'); doc.setFontSize(10.5); T(r.codArt || '(senza codice)', MARG, y + 3);
+    const diversa = r.stato !== 'conforme';
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(9);
+    if (diversa) doc.setTextColor(170, 60, 0); else doc.setTextColor(20, 110, 60);
+    T(nomeStatoRiga(r.stato), PW - MARG, y + 3, { align: 'right' });
+    doc.setTextColor(90); doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5);
+    if (r.descrizione) T(testoLargo(r.descrizione, larg - 40)[0], MARG, y + 7.5);
+    doc.setTextColor(0);
+    let yt = y + 10;
+    // tabella delle taglie
+    doc.setFontSize(8); doc.setDrawColor(190); doc.setLineWidth(0.2);
+    doc.setTextColor(110);
+    taglie.forEach((t, k) => T(t === SENZA ? 'Pezzi' : t, MARG + ETI + k * cella + cella / 2, yt + 3.5, { align: 'center' }));
+    doc.setTextColor(0);
+    yt += 5;
+    for (const [nome, val] of righeTab) {
+      doc.setFont('helvetica', nome === confronta ? 'bold' : 'normal');
+      T(nome, MARG, yt + 3.5);
+      taglie.forEach((t, k) => {
+        const x = MARG + ETI + k * cella;
+        const q = Number(val?.[t]) || 0, attesa = Number(r.ordinate?.[t]) || 0;
+        if (nome === confronta && q !== attesa) { doc.setFillColor(253, 226, 196); doc.rect(x, yt, cella, 5, 'F'); }
+        doc.rect(x, yt, cella, 5);
+        T(q ? String(q) : '-', x + cella / 2, yt + 3.5, { align: 'center' });
+      });
+      yt += 5;
+    }
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5);
+    if (diffTxt.length) { yt += 1; doc.setTextColor(90); T(diffTxt, MARG, yt + 3); yt += diffTxt.length * 4; doc.setTextColor(0); }
+    if (probl.length) { yt += 1; doc.setFont('helvetica', 'bold'); doc.setTextColor(180, 30, 30); T(probl, MARG, yt + 3); yt += probl.length * 4; doc.setTextColor(0); doc.setFont('helvetica', 'normal'); }
+    y = yt + 3;
+    doc.setDrawColor(215); doc.setLineWidth(0.2); doc.line(MARG, y, PW - MARG, y);
+    y += 4;
+  }
+
+  const n = doc.getNumberOfPages();
+  for (let i = 1; i <= n; i++) {
+    doc.setPage(i);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(120);
+    T(`Generato il ${dataOra(oraIso())} - pagina ${i} di ${n}`, PW - MARG, PH - 6, { align: 'right' });
+  }
+  const nome = `Distinta ${d.tipo} ordine ${d.ordineId} ${fornitore} ${d.data.slice(0, 10)}.pdf`;
+  await condividiFile(doc.output('blob'), nome.replace(/[\\/:*?"<>|]/g, '-'));
 }

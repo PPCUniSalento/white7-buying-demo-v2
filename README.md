@@ -36,6 +36,8 @@ Le due versioni stanno sullo stesso dominio ma non si toccano: la v2 usa un arch
 - **Colore a testo libero** con suggerimenti: un colore che non c'è viene aggiunto all'elenco (segnato «nuovo»); pulsante per usare il codice colore in fondo al codice articolo.
 - **Continuativo automatico**: spuntato quando lo stesso codice, a meno degli spazi, è già stato acquistato in una stagione precedente; il buyer può toglierlo.
 - **Diritto di reso e acconto** nella testata dell'ordine, con campi separati e facoltativi: reso (percentuale, importo, entro quale data) e acconto (percentuale, importo, data; con la percentuale si vede l'importo corrispondente sul netto). Come pagamento e sconti, arrivano solo all'amministrazione: pacchetto, PDF ed Excel, che ora ha anche la colonna delle condizioni di pagamento.
+- **Foto con due pulsanti** (proposta del 01/11/2026): «Fotocamera», il mirino nella pagina con scatti a raffica (se la fotocamera non si apre, propone quella del dispositivo), e «Galleria».
+- **PDF della distinta** di ricezione, dalla schermata della distinta: testata, chiusura con differenze, tabella delle taglie per articolo con le differenze evidenziate e le segnalazioni; valori economici solo per amministrazione e buyer.
 - **Ricezione merce anche per la logistica**: la stessa merce passa da logistica e negozio, che lavorano sulle stesse distinte dell'ordine. Una consegna può essere iniziata, proseguita e chiusa (anche con differenze) dall'uno o dall'altro; ogni distinta arriva ad amministrazione, buyer e all'altro ruolo che riceve, e le quantità ancora attese tengono conto di tutte le distinte.
 - **Griglie taglie del cliente** con il loro codice (A, B, C…), visibile e modificabile nel ruolo Configurazione e incluso negli export. Il modello `Per il cliente/Modello griglie taglie v1.02 …xlsx` si importa da Configurazione → Importa da Excel: aggiunge le 26 griglie del cliente e disattiva quelle provvisorie.
 
@@ -63,7 +65,7 @@ Sul telefono l'archivio si carica dal selettore di file (app File, OneDrive, Air
 | `js/db.js` | archivio (Dexie/IndexedDB), trasmissione, distinte, registro |
 | `js/analisi.js` | ricerca, report, confronto stagioni, avvisi |
 | `js/excel.js` | export Excel (ExcelJS) |
-| `js/pdf.js` | PDF dell'ordine con le foto, con o senza dati economici (jsPDF) |
+| `js/pdf.js` | PDF dell'ordine con le foto, con o senza dati economici, e PDF della distinta di ricezione (jsPDF) |
 | `js/config.js` | configurazione in Excel: esportazione e importazione con anteprima |
 | `js/comp.js` | componenti comuni: foto, mirino, scelta fornitore e colore, riepilogo |
 | `js/views-*.js` | schermate per ruolo |

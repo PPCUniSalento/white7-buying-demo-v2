@@ -8,7 +8,7 @@ import {
   taglieOrdinate, ricevutoPerTaglia, confrontoTaglie, statoRigheOrdine, sommaTaglie, DISCREPANZE, inRitardo,
 } from './db.js';
 import { esportaRighe } from './excel.js';
-import { esportaPdf } from './pdf.js';
+import { esportaPdf, esportaPdfDistinta } from './pdf.js';
 import {
   RUOLI, STATI, GENERI, PROBLEMI, SENZA_TAGLIA, euro, euro0, num, perc, dataOra, mese, meseCorrente, dataConsegna, stagioneNome, totaleRiga,
   prezzoNetto, testoSconti, RICEVONO, testoReso, testoAcconto,
@@ -642,7 +642,11 @@ export const Distinta = {
       ...(sommaTaglie(r.prima) ? [{ nome: 'Totale', val: r.cumulate }] : []),
     ];
     const confronta = (r) => (sommaTaglie(r.prima) ? 'Totale' : 'Questa consegna');
-    return { mancante: false, d, o, prezzi, ritorno, righeTab, confronta, STATI_RIGA, nomeFornitore, dataOra, num, euro, perc, RUOLI };
+    async function pdf() {
+      toast('Preparazione PDF…');
+      try { await esportaPdfDistinta(d.id, { prezzi: prezzi.value }); } catch (e) { toast(`PDF non creato: ${e.message || e}`, 'err'); }
+    }
+    return { mancante: false, d, o, prezzi, ritorno, righeTab, confronta, pdf, STATI_RIGA, nomeFornitore, dataOra, num, euro, perc, RUOLI };
   },
   template: `<div class="pagina" v-if="!mancante">
     <page-head :titolo="'Distinta ' + d.tipo" :sotto="'Ordine n. ' + d.ordineId + ' · ' + nomeFornitore(o?.fornitoreId)" :indietro="ritorno"/>
@@ -662,6 +666,7 @@ export const Distinta = {
       <div class="barra-perc"><i :style="{width: d.perc + '%'}"></i></div>
       <p v-if="d.note" class="nota-box">{{ d.note }}</p>
     </section>
+    <div class="azioni-pagina"><button class="btn" @click="pdf"><ic n="download"/> PDF della distinta</button></div>
     <section class="card">
       <div class="card-h"><h2>Articoli</h2><small class="muted">{{ d.discrepanze || 0 }} discrepanze · {{ d.problemi }} segnalazioni</small></div>
       <div v-for="r in d.righe" :key="r.rigaId" class="dist-riga" :class="{prob: r.problema || ['eccedenza', 'taglie diverse', 'eccedenze e mancanze'].includes(r.stato)}">

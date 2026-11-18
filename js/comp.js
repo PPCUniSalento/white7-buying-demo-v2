@@ -158,9 +158,10 @@ export const FornitorePicker = {
     </sheet></div>`,
 };
 
-// Mirino della fotocamera nella pagina: scatti a raffica senza uscire dall'app
+// Mirino della fotocamera nella pagina: scatti a raffica senza uscire dall'app. Se la fotocamera non si
+// apre (permesso negato, browser senza accesso), propone la fotocamera del sistema (evento «nativa»).
 export const Mirino = {
-  emits: ['foto', 'chiudi'],
+  emits: ['foto', 'chiudi', 'nativa'],
   props: { conteggio: Number },
   setup(p, { emit }) {
     const video = ref(null), errore = ref(''), lampo = ref(false), occupato = ref(false);
@@ -173,7 +174,7 @@ export const Mirino = {
         video.value.srcObject = stream;
         await video.value.play();
       } catch (e) {
-        errore.value = 'Fotocamera non disponibile (' + (e.name || e.message) + '). Usa "Scatta" o "Galleria".';
+        errore.value = 'Fotocamera non disponibile nella pagina (' + (e.name || e.message) + ').';
       }
     });
     onBeforeUnmount(() => stream && stream.getTracks().forEach((t) => t.stop()));
@@ -189,7 +190,8 @@ export const Mirino = {
   template: `<teleport to="body"><div class="mirino">
     <video ref="video" playsinline muted autoplay></video>
     <div class="lampo" v-if="lampo"></div>
-    <div v-if="errore" class="mirino-err">{{ errore }}</div>
+    <div v-if="errore" class="mirino-err">{{ errore }}
+      <button class="btn chiaro" @click="$emit('nativa')"><ic n="camera"/> Usa la fotocamera del dispositivo</button></div>
     <div class="mirino-bar">
       <button class="btn chiaro" @click="$emit('chiudi')">Fine</button>
       <button class="scatto" :disabled="!!errore || occupato" @click="cattura" aria-label="Cattura"></button>
@@ -216,7 +218,8 @@ export const Visore = {
     <div class="vis-c">{{ i + 1 }} / {{ fotoIds.length }}</div></div></teleport>`,
 };
 
-// Foto di un articolo: mirino, fotocamera nativa, galleria; prima foto = principale
+// Foto di un articolo: «Fotocamera» (mirino nella pagina, scatti a raffica; se non disponibile, fotocamera
+// del sistema) e «Galleria»; prima foto = principale. Due pulsanti invece di tre (proposta del 01/11/2026).
 export const FotoArticolo = {
   props: { rigaId: Number, modificabile: Boolean },
   setup(p) {
@@ -234,6 +237,9 @@ export const FotoArticolo = {
       }
     }
     const daMirino = (r) => aggiungiFoto(p.rigaId, r);
+    const fotocamera = () => (haMirino ? (mirino.value = true) : inpCam.value.click());
+    // dal mirino che non si apre: si chiude e si passa alla fotocamera del sistema (nello stesso tocco)
+    const nativa = () => { mirino.value = false; inpCam.value.click(); };
     async function principale(f) {
       const ids = foto.value.map((x) => x.id).filter((id) => id !== f.id);
       await riordinaFoto(p.rigaId, [f.id, ...ids]);
@@ -253,7 +259,7 @@ export const FotoArticolo = {
       sel.value = null;
     }
     const apri = (k) => (visore.value = k);
-    return { mirino, visore, elab, sel, inpCam, inpGal, haMirino, foto, min, daFile, daMirino, principale, sposta, elimina, apri };
+    return { mirino, visore, elab, sel, inpCam, inpGal, haMirino, foto, min, daFile, daMirino, fotocamera, nativa, principale, sposta, elimina, apri };
   },
   template: `<div class="foto-art">
     <div class="foto-griglia">
@@ -266,13 +272,12 @@ export const FotoArticolo = {
     <div class="foto-info" :class="{ko: min > 0 && foto.length < min}">{{ foto.length ? foto.length + ' foto' : 'Nessuna foto' }}
       · {{ min > 0 ? 'minimo ' + min : 'facoltative, anche tre o più' }}<span v-if="foto.length"> · la prima è l'immagine principale</span></div>
     <div v-if="modificabile" class="foto-azioni">
-      <button v-if="haMirino" class="btn" @click="mirino = true"><ic n="aperture"/> Mirino</button>
-      <button class="btn" @click="inpCam.click()"><ic n="camera"/> Scatta</button>
+      <button class="btn" @click="fotocamera"><ic n="camera"/> Fotocamera</button>
       <button class="btn" @click="inpGal.click()"><ic n="gallery"/> Galleria</button>
       <input ref="inpCam" type="file" accept="image/*" capture="environment" hidden @change="daFile">
       <input ref="inpGal" type="file" accept="image/*" multiple hidden @change="daFile">
     </div>
-    <mirino v-if="mirino" :conteggio="foto.length" @foto="daMirino" @chiudi="mirino = false"/>
+    <mirino v-if="mirino" :conteggio="foto.length" @foto="daMirino" @chiudi="mirino = false" @nativa="nativa"/>
     <visore v-if="visore !== null" :foto-ids="foto.map(f => f.id)" :indice="visore" @chiudi="visore = null"/>
     <sheet v-if="sel" titolo="Foto" @chiudi="sel = null">
       <div class="menu-azioni">

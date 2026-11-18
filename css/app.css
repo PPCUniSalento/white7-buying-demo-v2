@@ -382,7 +382,7 @@ input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--ruolo); fl
 .mirino { position: fixed; inset: 0; z-index: 60; background: #000; display: flex; flex-direction: column; }
 .mirino video { flex: 1; width: 100%; min-height: 0; object-fit: contain; background: #000; }
 .mirino .lampo { position: absolute; inset: 0; background: #fff; opacity: .7; pointer-events: none; }
-.mirino-err { position: absolute; top: 40%; left: 20px; right: 20px; color: #fff; text-align: center; }
+.mirino-err { position: absolute; top: 40%; left: 20px; right: 20px; color: #fff; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 14px; }
 .mirino-bar { display: flex; align-items: center; justify-content: space-between; padding: 18px 22px calc(env(safe-area-inset-bottom) + 22px); }
 .mirino-n { color: #fff; font-weight: 600; min-width: 64px; text-align: right; }
 .scatto { width: 74px; height: 74px; border-radius: 50%; border: 5px solid rgba(255,255,255,.55); background: #fff; background-clip: padding-box; cursor: pointer; }
