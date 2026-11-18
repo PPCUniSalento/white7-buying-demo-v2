@@ -17,6 +17,9 @@ export const RUOLI = {
 };
 // ruoli che possono ricevere un ordine trasmesso
 export const DESTINATARI = ['amministrazione', 'logistica', 'puntovendita'];
+// Ruoli che registrano la ricezione merce (mail del cliente del 10/11/2026): la stessa merce passa da
+// entrambi; le distinte sono comuni all'ordine e ognuno può iniziare, proseguire o chiudere le consegne.
+export const RICEVONO = ['logistica', 'puntovendita'];
 
 export const STATI = {
   bozza: { nome: 'Bozza', classe: 'st-bozza' },
@@ -45,6 +48,18 @@ const fNum = new Intl.NumberFormat('it-IT');
 const fPerc = new Intl.NumberFormat('it-IT', { maximumFractionDigits: 1 });
 
 export const euro = (v) => fEuro.format(v || 0);
+// Data AAAA-MM-GG come GG/MM/AAAA (date libere: reso, acconto)
+export const dataGiorno = (v) => (v ? v.split('-').reverse().join('/') : '');
+// Diritto di reso e acconto (mail del cliente del 10/11/2026): campi separati della testata, facoltativi,
+// solo per buyer e amministrazione. Testo unico per pacchetti, PDF e registro; '' se non compilati.
+export const CAMPI_RESO_ACCONTO = ['resoPerc', 'resoImporto', 'resoEntro', 'accontoPerc', 'accontoImporto', 'accontoData'];
+const pieno = (v) => v != null && v !== '';
+function testoTre(perc, importo, dt, prepData) {
+  return [pieno(perc) ? `${perc}%` : '', pieno(importo) ? euro(importo) : '', dt ? `${prepData} ${dataGiorno(dt)}` : ''].filter(Boolean).join(' · ');
+}
+export const testoReso = (o) => testoTre(o.resoPerc, o.resoImporto, o.resoEntro, 'entro il');
+export const testoAcconto = (o) => testoTre(o.accontoPerc, o.accontoImporto, o.accontoData, 'il');
+export const numONull = (v) => (pieno(v) && Number.isFinite(Number(v)) ? Number(v) : null);
 export const euro0 = (v) => fEuro0.format(v || 0);
 export const num = (v) => fNum.format(v || 0);
 export const perc = (v) => (v == null || !isFinite(v) ? '–' : `${fPerc.format(v)}%`);
@@ -117,8 +132,23 @@ export function testoDifferenze(mancanti, eccedenze) {
 export const meseCorrente = () => new Date().toISOString().slice(0, 7);
 export const oraIso = () => new Date().toISOString();
 
-// Totale riga: prezzo × quantità al netto dello sconto di riga (%)
-export const totaleRiga = (r) => (r.prezzo || 0) * (r.qta || 0) * (1 - (r.sconto || 0) / 100);
+// Sconti (risposta del cliente del 10/11/2026): commerciale e finanziario, a cascata. Il finanziario
+// si calcola sul prezzo già scontato del commerciale: 10.000 − 10% = 9.000, − 5% = 8.550.
+// Ogni riga porta gli sconti che valgono per lei (quelli dell'ordine, se l'ordine li applica a tutti
+// gli articoli). "sconto" è il nome del commerciale nei dati e nei pacchetti della prima versione.
+export const scontoComm = (r) => Number(r.scontoComm ?? r.sconto) || 0;
+export const scontoFin = (r) => Number(r.scontoFin) || 0;
+export const prezzoNetto = (r) => (r.prezzo || 0) * (1 - scontoComm(r) / 100) * (1 - scontoFin(r) / 100);
+export const lordoRiga = (r) => (r.prezzo || 0) * (r.qta || 0);
+// Totale riga: prezzo × quantità al netto di entrambi gli sconti
+export const totaleRiga = (r) => prezzoNetto(r) * (r.qta || 0);
+// "10% + 5%" (vuoto se non ci sono sconti)
+export const testoSconti = (r) => [scontoComm(r), scontoFin(r)].some(Boolean)
+  ? `${scontoComm(r) || 0}% + ${scontoFin(r) || 0}%` : '';
+
+// Codice articolo per il confronto fra stagioni (continuativi): maiuscolo e senza spazi,
+// così un errore di spaziatura in fase di buying non fa perdere l'articolo (10/11/2026)
+export const codiceConfronto = (c) => (c || '').toUpperCase().replace(/\s+/g, '');
 
 // Formato codice articolo: "CODICE+TESSUTO COLORE" (almeno due blocchi separati da spazio).
 // coloreInFondo = false (configurazione): basta che il codice ci sia

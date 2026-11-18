@@ -4,7 +4,7 @@
 // PREFISSO e all'attivazione si cancellano solo quelle, mai le cache della v1.
 
 const PREFISSO = 'w7v2-';
-const VERSIONE = PREFISSO + '11';
+const VERSIONE = PREFISSO + '12';
 const FILE = [
   './',
   'index.html',
@@ -16,6 +16,7 @@ const FILE = [
   'js/comp.js',
   'js/analisi.js',
   'js/excel.js',
+  'js/pdf.js',
   'js/views-buyer.js',
   'js/views-arrivi.js',
   'js/views-analisi.js',
@@ -26,6 +27,7 @@ const FILE = [
   'vendor/vue.global.prod.js',
   'vendor/dexie.min.js',
   'vendor/exceljs.min.js',
+  'vendor/jspdf.umd.min.js',
   'icons/icon-192.png',
   'icons/icon-512.png',
   'icons/icon-maskable-512.png',

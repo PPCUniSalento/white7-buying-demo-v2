@@ -1,6 +1,9 @@
 // Componenti condivisi.
 
-import { M, state, fotoRiga, fotoPrincipale, aggiungiFoto, eliminaFoto, riordinaFoto, riepilogo, attivo, nuovoFornitore, fornitoriSimili, giorniConsegna } from './db.js';
+import {
+  M, state, fotoRiga, fotoPrincipale, aggiungiFoto, eliminaFoto, riordinaFoto, riepilogo, attivo, nuovoFornitore, fornitoriSimili, giorniConsegna,
+  trovaColore, coloreDaTesto,
+} from './db.js';
 import { STATI, euro, num, perc, urlBlob, elaboraFoto, dataDiConsegna, giornoDiConsegna, nomeGiorno } from './util.js';
 
 const { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } = Vue;
@@ -309,11 +312,43 @@ export const DataConsegna = {
       <option v-for="g in opzioni" :key="g" :value="g">{{ nomeGiorno(g) }}</option></select></div>`,
 };
 
+// Colore libero (risposta del cliente del 10/11/2026): si sceglie un colore già censito o se ne scrive
+// uno nuovo, alfanumerico e di qualunque lunghezza ("01DB", "9300", "DARK NATURAL"), che entra nell'elenco.
+export const ColorePicker = {
+  props: { modelValue: Number, disabled: Boolean, suggerito: String },
+  emits: ['update:modelValue'],
+  setup(p, { emit }) {
+    const nomeDi = (id) => (id ? M.col.get(id)?.nome || '' : '');
+    const testo = ref(nomeDi(p.modelValue));
+    watch(() => p.modelValue, (v) => { testo.value = nomeDi(v); });
+    const elenco = computed(() => { state.rev; return M.colori.filter((c) => attivo(c) || c.id === p.modelValue).map((c) => c.nome); });
+    const nuovo = computed(() => !!testo.value.trim() && !trovaColore(testo.value));
+    async function conferma() {
+      const t = testo.value.trim();
+      if (!t) { if (p.modelValue != null) emit('update:modelValue', null); return; }
+      const era = M.colori.length;
+      const c = await coloreDaTesto(t);
+      testo.value = c.nome;
+      if (M.colori.length > era) toast(`Nuovo colore «${c.nome}» aggiunto all'elenco`);
+      if (c.id !== p.modelValue) emit('update:modelValue', c.id);
+    }
+    const usa = (t) => { testo.value = t; conferma(); };
+    return { testo, elenco, nuovo, conferma, usa };
+  },
+  template: `<div class="colore-pick">
+    <input class="inp" list="elenco-colori" v-model="testo" :disabled="disabled" @change="conferma" @keyup.enter="$event.target.blur()"
+      placeholder="Scegli o scrivi (es. 01DB, DARK NATURAL)" autocomplete="off" spellcheck="false">
+    <datalist id="elenco-colori"><option v-for="n in elenco" :key="n" :value="n"></option></datalist>
+    <small v-if="!disabled && nuovo" class="aiuto">Colore nuovo: verrà aggiunto all'elenco dei colori</small>
+    <button v-else-if="!disabled && suggerito && !testo.trim()" type="button" class="link sugg-col" @click="usa(suggerito)">Usa «{{ suggerito }}» dal codice articolo</button>
+  </div>`,
+};
+
 // Riepilogo ordine per categoria e sottocategoria
 export const Riepilogo = {
-  props: { righe: Array, scontoExtra: Number, prezzi: { type: Boolean, default: true } },
+  props: { righe: Array, prezzi: { type: Boolean, default: true } },
   setup(p) {
-    const r = computed(() => riepilogo(p.righe, p.scontoExtra));
+    const r = computed(() => riepilogo(p.righe));
     return { r, euro, num, perc };
   },
   template: `<table class="tab riep">
@@ -327,8 +362,8 @@ export const Riepilogo = {
       </template>
       <tr v-if="!r.macro.length"><td colspan="4" class="muted">Nessun articolo</td></tr>
     </tbody>
-    <tfoot><tr><td>Totale</td><td class="n">{{ num(r.pezzi) }}</td><td v-if="prezzi" class="n">{{ euro(r.valore) }}</td><td v-if="prezzi"></td></tr>
-      <tr v-if="prezzi && scontoExtra"><td>Scontato ({{ scontoExtra }}%)</td><td></td><td class="n">{{ euro(r.scontato) }}</td><td></td></tr></tfoot>
+    <tfoot><tr><td>Totale<small v-if="prezzi && r.lordo - r.valore > 0.004" class="muted"> netto sconti</small></td><td class="n">{{ num(r.pezzi) }}</td><td v-if="prezzi" class="n">{{ euro(r.valore) }}</td><td v-if="prezzi"></td></tr>
+      <tr v-if="prezzi && r.lordo - r.valore > 0.004" class="riep-lordo"><td>Lordo (prima degli sconti)</td><td></td><td class="n">{{ euro(r.lordo) }}</td><td></td></tr></tfoot>
   </table>`,
 };
 
@@ -339,7 +374,7 @@ export function toast(testo, tipo = 'ok') {
 }
 
 export function registraComuni(app) {
-  Object.entries({ Ic, Thumb, StatoBadge, Sheet, PageHead, FornitorePicker, DataConsegna, Mirino, Visore, FotoArticolo, Riepilogo })
+  Object.entries({ Ic, Thumb, StatoBadge, Sheet, PageHead, FornitorePicker, ColorePicker, DataConsegna, Mirino, Visore, FotoArticolo, Riepilogo })
     .forEach(([k, v]) => app.component(k, v));
 }
 

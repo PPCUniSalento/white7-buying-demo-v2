@@ -302,7 +302,7 @@ export const CfgGriglie = {
     <page-head titolo="Griglie taglie" :sotto="M.griglie.length + ' griglie'" indietro="#/">
       <a class="btn primario" href="#/cfg-griglia/0"><ic n="plus"/> Griglia</a></page-head>
     <section v-for="g in M.griglie" :key="g.id" class="card cliccabile" :class="{spenta: !attivo(g)}" @click="$vai('#/cfg-griglia/' + g.id)">
-      <div class="card-h"><h2>{{ g.nome }} <i v-if="!attivo(g)" class="tag-off">disattivata</i></h2><ic n="next" :s="18"/></div>
+      <div class="card-h"><h2><span v-if="g.cod" class="chip mono cod-gr">{{ g.cod }}</span> {{ g.nome }} <i v-if="!attivo(g)" class="tag-off">disattivata</i></h2><ic n="next" :s="18"/></div>
       <div class="chips"><span v-for="t in g.taglie" :key="t" class="chip">{{ t }}</span></div>
       <p class="muted">{{ g.taglie.length }} taglie · proposta in {{ nSub(g) }} sottocategori{{ nSub(g) === 1 ? 'a' : 'e' }} · {{ quanti(uso.get(g.id) || 0, 'articoli') }}</p>
     </section>
@@ -314,7 +314,7 @@ export const CfgGriglia = {
   setup(p) {
     const orig = p.id ? M.gri.get(p.id) : null;
     if (p.id && !orig) return { mancante: true };
-    const g = reactive(orig ? { nome: orig.nome, taglie: [...orig.taglie], attivo: attivo(orig) } : { nome: '', taglie: [], attivo: true });
+    const g = reactive(orig ? { nome: orig.nome, cod: orig.cod || '', taglie: [...orig.taglie], attivo: attivo(orig) } : { nome: '', cod: '', taglie: [], attivo: true });
     const subs = reactive(new Set(orig ? M.categorie.filter((c) => (c.griglie || []).includes(orig.id)).map((c) => c.id) : []));
     const nuova = ref(''), serie = reactive({ da: '', a: '', passo: '2' }), sel = ref(null), aperte = reactive(new Set());
     const righe = orig ? [...M.rig.values()].filter((r) => r.grigliaId === orig.id) : [];
@@ -357,9 +357,11 @@ export const CfgGriglia = {
       if (!nome) { toast('Il nome è obbligatorio', 'err'); return; }
       if (M.griglie.some((x) => x.id !== orig?.id && uguale(x.nome, nome))) { toast('Esiste già una griglia con questo nome', 'err'); return; }
       if (!g.taglie.length) { toast('Inserisci almeno una taglia', 'err'); return; }
+      const cod = g.cod.trim();
+      if (cod && M.griglie.some((x) => x.id !== orig?.id && uguale(x.cod || '', cod))) { toast('Esiste già una griglia con questo codice', 'err'); return; }
       if (rimosseUsate.value.length && !confirm(`Le taglie ${rimosseUsate.value.join(', ')} sono già compilate in alcuni articoli: lì restano con le loro quantità. Continuare?`)) return;
       const id = orig ? orig.id : nuovoId(M.griglie);
-      const rec = { ...(orig || {}), id, nome, taglie: [...g.taglie], attivo: g.attivo };
+      const rec = { ...(orig || {}), id, nome, cod, taglie: [...g.taglie], attivo: g.attivo };
       const griglie = orig ? M.griglie.map((x) => (x.id === id ? rec : x)) : [...M.griglie, rec];
       let nCambi = 0;
       const categorie = M.categorie.map((c) => {
@@ -369,7 +371,7 @@ export const CfgGriglia = {
         return { ...c, griglie: vuole ? [...(c.griglie || []), id] : c.griglie.filter((x) => x !== id) };
       });
       const det = orig
-        ? [orig.nome !== nome && `rinominata «${nome}»`, orig.taglie.join() !== rec.taglie.join() && `taglie: ${rec.taglie.join(' ')}`,
+        ? [orig.nome !== nome && `rinominata «${nome}»`, (orig.cod || '') !== cod && `codice: ${cod || '–'}`, orig.taglie.join() !== rec.taglie.join() && `taglie: ${rec.taglie.join(' ')}`,
           attivo(orig) !== g.attivo && (g.attivo ? 'riattivata' : 'disattivata'), nCambi && `sottocategorie cambiate: ${nCambi}`].filter(Boolean).join('; ')
         : `taglie: ${rec.taglie.join(' ')}; ${subs.size} sottocategorie`;
       await salvaAnagrafica('griglie', griglie, det ? `Griglia ${orig ? '«' + orig.nome + '»' : 'nuova «' + nome + '»'}: ${det}` : '');
@@ -400,6 +402,8 @@ export const CfgGriglia = {
     <page-head :titolo="orig ? orig.nome : 'Nuova griglia'" sotto="Griglia taglie" indietro="#/cfg-taglie"/>
     <section class="card"><div class="form">
       <label class="largo">Nome *<input class="inp" v-model="g.nome" placeholder="Es. Italiana 44–64"></label>
+      <label>Codice<input class="inp mono" v-model="g.cod" placeholder="Es. C" autocomplete="off" spellcheck="false">
+        <small class="aiuto">Il codice della scala taglie nel gestionale: va negli export</small></label>
       <label class="largo check"><input type="checkbox" v-model="g.attivo"> Attiva: proposta nei nuovi articoli</label>
     </div></section>
 

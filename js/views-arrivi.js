@@ -1,6 +1,6 @@
 // Viste dei ruoli che ricevono: pannelli, casella in arrivo, pacchetto, ricezione merce per taglia, distinte.
-// Decisioni del 15/10/2026: ogni negozio riceve direttamente (la logistica consulta soltanto);
-// la ricezione è per taglia, "Tutti" vuol dire corrispondenza esatta; chi riceve può chiudere
+// Ricezione (mail del cliente del 10/11/2026, perimetro esteso il 18/11): la stessa merce passa da logistica
+// e negozio, che ricevono entrambi sulle stesse distinte dell'ordine; la ricezione è per taglia, "Tutti" vuol dire corrispondenza esatta; chi riceve può chiudere
 // l'ordine nonostante le differenze, assumendosene la responsabilità.
 
 import {
@@ -8,8 +8,10 @@ import {
   taglieOrdinate, ricevutoPerTaglia, confrontoTaglie, statoRigheOrdine, sommaTaglie, DISCREPANZE, inRitardo,
 } from './db.js';
 import { esportaRighe } from './excel.js';
+import { esportaPdf } from './pdf.js';
 import {
   RUOLI, STATI, GENERI, PROBLEMI, SENZA_TAGLIA, euro, euro0, num, perc, dataOra, mese, meseCorrente, dataConsegna, stagioneNome, totaleRiga,
+  prezzoNetto, testoSconti, RICEVONO, testoReso, testoAcconto,
 } from './util.js';
 import { toast } from './comp.js';
 
@@ -31,6 +33,12 @@ const etichettaTaglia = (t) => (t === SENZA_TAGLIA ? 'Pezzi' : t);
 // a ordine chiuso, ciò che manca non arriverà più: "da completare" / "non ricevuto" diventano "mancante"
 export const statoRigaVisto = (stato, chiuso) => (chiuso && (stato === 'da completare' || stato === 'non ricevuto') ? 'mancante' : stato);
 
+// L'altro ruolo che riceve, per i testi: «la logistica» / «al negozio»
+function altroRicevente(prep = '') {
+  const altro = state.ruolo === 'logistica' ? 'negozio' : 'logistica';
+  return prep === 'a' ? (altro === 'logistica' ? 'alla logistica' : 'al negozio') : (altro === 'logistica' ? 'la logistica' : 'il negozio');
+}
+
 function messaggiRuolo(ruolo, tipo) {
   return [...M.messaggi.values()].filter((m) => m.a === ruolo && (!tipo || m.tipo === tipo)).sort((a, b) => (b.data || '').localeCompare(a.data || ''));
 }
@@ -51,7 +59,7 @@ const msgOrdine = (ordineId, ruolo) => [...M.messaggi.values()].find((x) => x.ti
 export function apriMessaggio(m) {
   segnaLetto(m.id);
   if (m.tipo === 'distinta') return vai(`#/distinta/${m.distintaId}`);
-  if (m.tipo === 'chiusura') {
+  if (m.tipo === 'chiusura' || m.tipo === 'prezzi') {
     if (state.ruolo === 'buyer') return vai(`#/ordine/${m.ordineId}`);
     const x = msgOrdine(m.ordineId, state.ruolo);
     return vai(x ? `#/pacchetto/${x.id}` : '#/distinte');
@@ -71,7 +79,7 @@ function differenzeAperte() {
   }
   return out.sort((a, b) => (b.o.modificato || '').localeCompare(a.o.modificato || ''));
 }
-const icona = (m) => (m.tipo === 'distinta' ? 'clip' : m.tipo === 'chiusura' ? 'lock' : 'inbox');
+const icona = (m) => (m.tipo === 'distinta' ? 'clip' : m.tipo === 'chiusura' ? 'lock' : m.tipo === 'prezzi' ? 'tag' : 'inbox');
 
 // Tabellina taglie: riga dell'ordinato e righe di confronto (la riga "confronta" è colorata per differenza)
 export const TaglieTabella = {
@@ -108,14 +116,14 @@ export const PannelloAdmin = {
     const dati = computed(() => {
       state.rev;
       const ordini = messaggiRuolo('amministrazione', 'ordine');
-      const avvisi = [...messaggiRuolo('amministrazione', 'distinta'), ...messaggiRuolo('amministrazione', 'chiusura')];
+      const avvisi = [...messaggiRuolo('amministrazione', 'distinta'), ...messaggiRuolo('amministrazione', 'chiusura'), ...messaggiRuolo('amministrazione', 'prezzi')];
       const sk = state.imp.stagioneLavoro;
       let trasm = 0, cons = 0;
       for (const o of M.ord.values()) {
         if (stagioneOrdine(o) !== sk || !['trasmesso', 'parziale', 'chiuso'].includes(o.stato)) continue;
         const st = statoRigheOrdine(o.id);
         for (const r of righeOrdine(o.id)) {
-          const pu = (r.prezzo || 0) * (1 - (r.sconto || 0) / 100);
+          const pu = prezzoNetto(r);
           trasm += pu * (r.qta || 0);
           cons += pu * (o.storico && o.stato === 'chiuso' ? r.qta || 0 : st.get(r.id)?.conformi || 0);
         }
@@ -193,12 +201,12 @@ export const PannelloNegozio = {
         parziali: daRic.filter((m) => M.ord.get(m.ordineId)?.stato === 'parziale').length,
         ritardi: daRic.filter((m) => inRitardo(m.payload.testa.consegnaA)),
         mesi: [...perMese.values()].sort((a, b) => a.k.localeCompare(b.k)),
-        diff: ruolo === 'logistica' ? differenzeAperte() : [],
+        diff: differenzeAperte(),
       };
     });
     const apri = (m) => { segnaLetto(m.id); vai(`#/pacchetto/${m.id}`); };
     const apriDiff = (o) => { const x = msgOrdine(o.id, state.ruolo); if (x) vai(`#/pacchetto/${x.id}`); };
-    const sotto = computed(() => (state.ruolo === 'logistica' ? 'Logistica · consultazione delle consegne ai negozi' : 'Punto vendita'));
+    const sotto = computed(() => (state.ruolo === 'logistica' ? 'Logistica · ricezione merce' : 'Punto vendita · ricezione merce'));
     return { dati, apri, apriDiff, sotto, primaFoto, pezziPacchetto, num, mese, dataConsegna, dataOra, stagioneNome, nomeFornitore, RUOLI, state, meseCorrente };
   },
   template: `<div class="pagina">
@@ -215,7 +223,7 @@ export const PannelloNegozio = {
         <li v-for="x in dati.diff" :key="x.o.id" @click="apriDiff(x.o)"><ic n="alert"/>
           <div class="grow"><b>n. {{ x.o.id }} · {{ nomeFornitore(x.o.fornitoreId) }}</b>
             <small v-if="x.disc">{{ x.disc }} articol{{ x.disc === 1 ? 'o' : 'i' }} con taglie diverse o eccedenze</small>
-            <small v-if="x.chiusura">chiuso con differenze dal negozio</small></div></li>
+            <small v-if="x.chiusura">chiuso con differenze da {{ RUOLI[x.chiusura.ruolo]?.nome || 'chi riceve' }}</small></div></li>
       </ul>
     </section>
     <section class="card" v-if="dati.nuovi.length">
@@ -309,8 +317,8 @@ export const Pacchetto = {
       return [...g.values()].sort((a, b) => b.pezzi - a.pezzi);
     });
     const distinte = computed(() => { state.rev; return [...M.distinte.values()].filter((d) => d.ordineId === m.ordineId); });
-    const puoRicevere = computed(() => state.ruolo === 'puntovendita' && ['trasmesso', 'parziale'].includes(stato.value));
-    const puoChiudere = computed(() => state.ruolo === 'puntovendita' && stato.value === 'parziale');
+    const puoRicevere = computed(() => RICEVONO.includes(state.ruolo) && ['trasmesso', 'parziale'].includes(stato.value));
+    const puoChiudere = computed(() => RICEVONO.includes(state.ruolo) && stato.value === 'parziale');
     const diff = computed(() => {
       let mancanti = 0, eccedenze = 0;
       for (const x of stRighe.value.values()) { mancanti -= sommaTaglie(x.mancanti); eccedenze += sommaTaglie(x.eccedenze); }
@@ -319,8 +327,9 @@ export const Pacchetto = {
     async function eseguiChiusura() {
       await chiudiConDifferenze(m.ordineId, notaChiusura.value.trim());
       chiudi.value = false;
-      toast('Ordine chiuso con differenze: amministrazione e buyer avvisati');
+      toast(`Ordine chiuso con differenze: amministrazione, buyer e ${altroRicevente()} avvisati`);
     }
+    // Export (10/11/2026): Excel e PDF per l'amministrazione, solo PDF per logistica e negozi; foto sempre
     async function excel() {
       toast('Preparazione file Excel…');
       await esportaRighe(righeOrdine(m.ordineId), {
@@ -328,15 +337,21 @@ export const Pacchetto = {
         titolo: `Ordine n. ${testa.id} – ${testa.fornitore} – ${stagioneNome(testa.stagione)}`, prezzi,
       });
     }
+    async function pdf() {
+      toast('Preparazione PDF…');
+      try { await esportaPdf(m.ordineId, { prezzi }); } catch (e) { toast(`PDF non creato: ${e.message || e}`, 'err'); }
+    }
+    const scontiTesta = testa.scontiArticolo ? 'per articolo'
+      : (testa.scontoComm || testa.scontoFin || testa.scontoExtra) ? `${testa.scontoComm ?? testa.scontoExtra ?? 0}% + ${testa.scontoFin || 0}%` : '';
     return {
       mancante: false, m, testa, righe, prezzi, q, visore, chiudi, notaChiusura, conferma, ordine, stato, ric, stRighe, pr, filtrate, riep,
-      distinte, puoRicevere, puoChiudere, diff, eseguiChiusura, excel, taglieOrdinate, STATI_RIGA, statoRigaVisto,
+      distinte, puoRicevere, puoChiudere, diff, eseguiChiusura, excel, pdf, scontiTesta, testoSconti, testoReso, testoAcconto, taglieOrdinate, STATI_RIGA, statoRigaVisto,
       GENERI, RUOLI, euro, num, perc, dataConsegna, dataOra, stagioneNome,
     };
   },
   template: `<div class="pagina" v-if="!mancante">
     <page-head :titolo="'Ordine n. ' + testa.id" :sotto="testa.fornitore" indietro="#/arrivi"><stato-badge :stato="stato"/></page-head>
-    <div v-if="!prezzi" class="banner neutro"><ic n="lock"/> Vista filtrata: senza prezzi d'acquisto, sconti e condizioni di pagamento.</div>
+    <div v-if="!prezzi" class="banner neutro"><ic n="lock"/> Vista filtrata: senza prezzi d'acquisto, sconti, condizioni di pagamento, reso e acconto.</div>
     <div v-if="ordine?.chiusura?.conDifferenze" class="banner avviso"><ic n="alert"/>
       <span>Chiuso con differenze da {{ RUOLI[ordine.chiusura.ruolo]?.nome }} il {{ dataOra(ordine.chiusura.data) }}:
         {{ $diff(ordine.chiusura.mancanti, ordine.chiusura.eccedenze) }}.<template v-if="ordine.chiusura.nota"> «{{ ordine.chiusura.nota }}»</template></span></div>
@@ -348,7 +363,9 @@ export const Pacchetto = {
         <div><span>Consegna</span><b>{{ testa.consegnaDa ? dataConsegna(testa.consegnaDa) + ' – ' + dataConsegna(testa.consegnaA) : '–' }}</b></div>
         <div><span>Trasmesso</span><b>{{ dataOra(m.data) }}</b></div>
         <div v-if="prezzi"><span>Pagamento</span><b>{{ testa.pagamento || '–' }}</b></div>
-        <div v-if="prezzi && testa.scontoExtra"><span>Sconto extra</span><b>{{ testa.scontoExtra }}%</b></div>
+        <div v-if="prezzi && scontiTesta"><span>Sconti (comm. + fin.)</span><b>{{ scontiTesta }}</b></div>
+        <div v-if="prezzi && testoReso(testa)"><span>Diritto di reso</span><b>{{ testoReso(testa) }}</b></div>
+        <div v-if="prezzi && testoAcconto(testa)"><span>Acconto</span><b>{{ testoAcconto(testa) }}</b></div>
       </div>
       <p v-if="testa.note" class="nota-box">{{ testa.note }}</p>
       <div v-if="stato === 'parziale' || stato === 'chiuso'" class="ric-stato">
@@ -358,7 +375,8 @@ export const Pacchetto = {
     <div class="azioni-pagina">
       <a v-if="puoRicevere" class="btn primario grande" :href="'#/ricezione/' + m.id"><ic n="clip"/> Ricezione merce</a>
       <button v-if="puoChiudere" class="btn" @click="chiudi = true"><ic n="lock"/> Chiudi con differenze</button>
-      <button class="btn" @click="excel"><ic n="download"/> Excel</button>
+      <button v-if="prezzi" class="btn" @click="excel"><ic n="download"/> Excel</button>
+      <button class="btn" @click="pdf"><ic n="download"/> PDF</button>
     </div>
 
     <section class="card">
@@ -384,7 +402,8 @@ export const Pacchetto = {
           <div class="grow"><b class="mono">{{ r.codArt }}</b><small>{{ r.descrizione }}</small></div>
           <div class="dx"><b>{{ num(r.qta) }} pz</b>
             <span v-if="stato !== 'trasmesso' && stRighe.get(r.id)" class="badge-riga" :class="STATI_RIGA[statoRigaVisto(stRighe.get(r.id).stato, stato === 'chiuso')].classe">{{ STATI_RIGA[statoRigaVisto(stRighe.get(r.id).stato, stato === 'chiuso')].nome }}</span>
-            <small v-if="prezzi">{{ euro(r.prezzo) }}</small></div>
+            <small v-if="prezzi">{{ euro(r.prezzo) }}<template v-if="testoSconti(r)"> −{{ testoSconti(r) }}</template></small>
+            <small v-if="prezzi && r.prezzoVendita != null" class="pv">vendita {{ euro(r.prezzoVendita) }}</small></div>
         </div>
         <div class="art-foto">
           <button v-for="(f, k) in r.foto" :key="f" @click="visore = {ids: r.foto, i: k}"><thumb :foto-id="f" :w="72"/></button>
@@ -483,7 +502,7 @@ export const Ricezione = {
       } finally { invio.value = false; }
     }
     return {
-      mancante: false, m, testa, righe, prima, ordinate, stato, residuo, residuoTot, soloAperti, segnala, conferma, note, visore, invio,
+      altroRicevente, mancante: false, m, testa, righe, prima, ordinate, stato, residuo, residuoTot, soloAperti, segnala, conferma, note, visore, invio,
       chiudiComunque, notaChiusura, responsabilita, dopo, visibili, tot, piu, tutti, azzera, tuttoArrivato, clsCella, clsRiga, invia,
       giaConforme, sommaTaglie, etichettaTaglia, STATI_RIGA, PROBLEMI, num, perc,
     };
@@ -568,7 +587,7 @@ export const Ricezione = {
           <label class="check"><input type="checkbox" v-model="responsabilita"> Me ne assumo la responsabilità</label>
         </template>
       </template>
-      <p class="muted">La distinta, con il dettaglio per taglia, arriva all'amministrazione e al buyer; lo stato dell'ordine si aggiorna in automatico.</p>
+      <p class="muted">La distinta, con il dettaglio per taglia, arriva all'amministrazione, al buyer e {{ altroRicevente('a') }}, che lavora sulle stesse consegne; lo stato dell'ordine si aggiorna in automatico.</p>
       <button class="btn primario pieno grande" :disabled="invio || (chiudiComunque && !responsabilita)" @click="invia"><ic n="send"/> Invia distinta</button>
     </sheet>
     <visore v-if="visore" :foto-ids="visore.ids" :indice="visore.i" @chiudi="visore = null"/>
@@ -582,11 +601,10 @@ export const Distinte = {
     const elenco = computed(() => {
       state.rev;
       let d = [...M.distinte.values()];
-      if (state.ruolo === 'puntovendita') d = d.filter((x) => x.ruolo === 'puntovendita');
       return d.sort((a, b) => b.data.localeCompare(a.data));
     });
     const nonLetta = (d) => { state.rev; return [...M.messaggi.values()].some((m) => m.distintaId === d.id && m.a === state.ruolo && !m.letto); };
-    const sotto = computed(() => ({ amministrazione: 'Ricevute dai negozi', logistica: 'Consegne registrate dai negozi', puntovendita: 'Inviate' }[state.ruolo]));
+    const sotto = computed(() => (state.ruolo === 'amministrazione' ? 'Registrate da logistica e negozi' : 'Di logistica e negozio, sulle stesse consegne'));
     return { elenco, nonLetta, sotto, nomeFornitore, dataOra, perc, RUOLI, state, M };
   },
   template: `<div class="pagina">

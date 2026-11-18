@@ -4,7 +4,9 @@ import {
   M, state, nomeAzienda, nomeFornitore, nomeMacro, nomeCat, nomeColore, fotoPrincipale, stagioneOrdine, statoConsegna, statoRigheOrdine,
   lunghezzaCartellino,
 } from './db.js';
-import { GENERI, STATI, stagioneNome, totaleRiga, blobBase64, condividiFile, caricaScript, data, dataConsegna } from './util.js';
+import {
+  GENERI, STATI, stagioneNome, totaleRiga, prezzoNetto, scontoComm, scontoFin, blobBase64, condividiFile, caricaScript, data, dataConsegna, numONull, dataGiorno,
+} from './util.js';
 
 const MAX_IMMAGINI = 400;
 
@@ -31,10 +33,13 @@ export async function esportaRighe(righe, { nomeFile, titolo, prezzi = true }) {
   const col = [
     ['Società', 12], ['Stagione', 10], ['Fornitore', 26], ['Ordine', 8], ['Codice articolo', 24], ['Vecchio codice', 18],
     ['Categoria', 14], ['Sottocategoria', 18], ['Colore', 11], ['Genere', 8],
-    ...(prezzi ? [['Prezzo', 10], ['Sconto %', 8]] : []), ['Quantità', 9], ...(prezzi ? [['Totale riga', 12]] : []),
-    ['Taglie', 22], ['Descrizione', 34], ['Composizione', 20], ['Dettagli', 24], ['Note', 24],
+    ...(prezzi ? [['Prezzo acquisto', 11], ['Sconto commerciale %', 11], ['Sconto finanziario %', 11], ['Prezzo netto', 11]] : []),
+    ['Quantità', 9], ...(prezzi ? [['Totale netto', 12], ['Prezzo vendita', 11]] : []),
+    ['Griglia', 8], ['Taglie', 22], ['Descrizione', 34], ['Composizione', 20], ['Dettagli', 24], ['Note', 24],
     ...(lim > 0 ? [[`Caratteri cartellino (limite ${lim})`, 12]] : []),
     ['Immagine principale', 14], ['Stato ordine', 13], ['Stato consegna', 14], ['Consegna entro', 13], ['Data inserimento', 12],
+    // dati della testata solo per l'amministrazione (10/11/2026)
+    ...(prezzi ? [['Condizioni di pagamento', 18], ['Reso %', 8], ['Reso importo', 11], ['Reso entro', 11], ['Acconto %', 9], ['Acconto importo', 11], ['Acconto data', 11]] : []),
   ];
   ws.columns = col.map(([header, width]) => ({ header, width }));
   ws.spliceRows(1, 0, [titolo || '']);
@@ -57,10 +62,12 @@ export async function esportaRighe(righe, { nomeFile, titolo, prezzi = true }) {
       nomeAzienda(o.aziendaId), stagioneNome(stagioneOrdine(o)), nomeFornitore(o.fornitoreId), o.id, r.codArt,
       (r.vecchiCodici || []).join(', '), r.macroId ? nomeMacro(r.macroId) : '', r.catId ? nomeCat(r.catId) : '',
       r.coloreId ? nomeColore(r.coloreId) : '', GENERI[r.genere] || '',
-      ...(prezzi ? [r.prezzo || 0, r.sconto || 0] : []), r.qta || 0, ...(prezzi ? [totaleRiga(r)] : []),
-      taglie, r.descrizione || '', r.composizione || '', r.dettagli || '', r.note || '',
+      ...(prezzi ? [r.prezzo || 0, scontoComm(r), scontoFin(r), prezzoNetto(r)] : []),
+      r.qta || 0, ...(prezzi ? [totaleRiga(r), r.prezzoVendita ?? null] : []),
+      r.grigliaId ? M.gri.get(r.grigliaId)?.cod || M.gri.get(r.grigliaId)?.nome || '' : '', taglie, r.descrizione || '', r.composizione || '', r.dettagli || '', r.note || '',
       ...(lim > 0 ? [lunghezzaCartellino(r)] : []),
       '', STATI[o.stato]?.nome || o.stato, statoConsegnaRiga(r, o, ricevutiPerOrdine.get(o.id)), dataConsegna(o.consegnaA), data(o.data),
+      ...(prezzi ? [o.pagamento || '', numONull(o.resoPerc), numONull(o.resoImporto), dataGiorno(o.resoEntro), numONull(o.accontoPerc), numONull(o.accontoImporto), dataGiorno(o.accontoData)] : []),
     ];
     const row = ws.addRow(valori);
     row.alignment = { vertical: 'top', wrapText: true };
@@ -79,7 +86,7 @@ export async function esportaRighe(righe, { nomeFile, titolo, prezzi = true }) {
     }
   }
   if (prezzi) {
-    for (const nome of ['Prezzo', 'Totale riga']) {
+    for (const nome of ['Prezzo acquisto', 'Prezzo netto', 'Totale netto', 'Prezzo vendita', 'Reso importo', 'Acconto importo']) {
       ws.getColumn(col.findIndex((c) => c[0] === nome) + 1).numFmt = '#,##0.00 €';
     }
   }

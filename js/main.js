@@ -1,7 +1,7 @@
 // Avvio, router a hash, barra dei ruoli e navigazione.
 
 import { state, carica, importaSeed, nonLetti, scriviLocale } from './db.js';
-import { RUOLI, DESTINATARI, testoDifferenze } from './util.js';
+import { RUOLI, DESTINATARI, RICEVONO, testoDifferenze } from './util.js';
 import { registraComuni, toast } from './comp.js';
 import { PannelloBuyer, Ordini, Ordine, Articolo, Trasmissione } from './views-buyer.js';
 import { PannelloAdmin, PannelloNegozio, Arrivi, Pacchetto, Ricezione, Distinte, Distinta } from './views-arrivi.js';
@@ -12,7 +12,7 @@ import { PannelloConfig, CfgCategorie, CfgGriglie, CfgGriglia, CfgLista, CfgRego
 const { createApp, reactive, computed, watchEffect } = Vue;
 
 const TUTTI = Object.keys(RUOLI);
-const RICEVONO = DESTINATARI;
+const DEST = DESTINATARI;   // ruoli con casella in arrivo, pacchetti e distinte
 const CONFIG = ['config'];
 
 // nome rotta → componente per ruolo, parametri
@@ -24,11 +24,11 @@ const ROTTE = {
   trasmissione: { comp: Trasmissione, ruoli: ['buyer'] },
   ricerca: { comp: Ricerca, ruoli: ['buyer', 'amministrazione'] },
   report: { comp: Report, ruoli: ['buyer', 'amministrazione'] },
-  arrivi: { comp: Arrivi, ruoli: RICEVONO },
-  pacchetto: { comp: Pacchetto, ruoli: RICEVONO, par: ['msgId'] },
-  // ogni negozio riceve direttamente la merce (15/10/2026): la logistica consulta soltanto
-  ricezione: { comp: Ricezione, ruoli: ['puntovendita'], par: ['msgId'] },
-  distinte: { comp: Distinte, ruoli: RICEVONO },
+  arrivi: { comp: Arrivi, ruoli: DEST },
+  pacchetto: { comp: Pacchetto, ruoli: DEST, par: ['msgId'] },
+  // la stessa merce passa da logistica e negozio (10/11/2026): ricevono entrambi, sulle stesse distinte
+  ricezione: { comp: Ricezione, ruoli: RICEVONO, par: ['msgId'] },
+  distinte: { comp: Distinte, ruoli: DEST },
   distinta: { comp: Distinta, ruoli: TUTTI, par: ['id'] },
   altro: { comp: Altro, ruoli: TUTTI },
   anagrafica: { comp: Anagrafica, ruoli: TUTTI, par: ['tipo'] },
@@ -103,8 +103,11 @@ const App = {
       const meta = document.querySelector('meta[name="theme-color"]');
       if (meta) meta.content = RUOLI[k].colore;
     }
-    const nl = (k) => { state.rev; return nonLetti(k); };
-    return { state, route, vista, props, chiave, nav, attiva, colore, setRuolo, nl, RUOLI };
+    const nl = (k, tipi) => { state.rev; return nonLetti(k, tipi); };
+    // contatori delle schede: ordini (e prezzi di vendita) in «In arrivo», distinte e chiusure in «Distinte»
+    const TIPI_SCHEDA = { arrivi: ['ordine', 'prezzi'], distinte: ['distinta', 'chiusura'] };
+    const nlScheda = (r) => (TIPI_SCHEDA[r] ? nl(state.ruolo, TIPI_SCHEDA[r]) : 0);
+    return { state, route, vista, props, chiave, nav, attiva, colore, setRuolo, nl, nlScheda, RUOLI };
   },
   template: `<div class="app" :data-ruolo="state.ruolo">
     <header class="topbar" v-if="state.haDati">
@@ -121,7 +124,7 @@ const App = {
     <nav class="tabbar" v-if="state.haDati">
       <a v-for="[r, ic, nome] in nav" :key="r" :href="'#/' + r" :class="{on: attiva === r}">
         <ic :n="ic" :s="22"/><span>{{ nome }}</span>
-        <i v-if="r === 'arrivi' && nl(state.ruolo)" class="badge">{{ nl(state.ruolo) }}</i></a>
+        <i v-if="nlScheda(r)" class="badge">{{ nlScheda(r) }}</i></a>
     </nav>
     <div v-if="state.toast" class="toast" :class="state.toast.tipo" role="status">{{ state.toast.testo }}</div>
   </div>`,

@@ -11,7 +11,7 @@ Le due versioni stanno sullo stesso dominio ma non si toccano: la v2 usa un arch
 
 - Controlli bloccanti: società, stagione, fornitore; per l'articolo codice (colore in fondo dopo uno spazio), categoria, sottocategoria, genere, prezzo, quantità. Pagamento, consegna, sconti, colore e foto sono facoltativi; il pagamento è un campo libero con suggerimenti (anche "conto vendita").
 - Foto facoltative, tre o più se si vuole (minimo regolabile dal ruolo Configurazione).
-- Ricezione merce per taglia: griglia con gli attesi per taglia, «Tutti» = esattamente l'ordinato; stati per articolo (conforme, da completare, eccedenza, taglie diverse); consegne in più tranche; chiusura con differenze da parte di chi riceve, con assunzione di responsabilità. Riceve solo il punto vendita; la logistica consulta.
+- Ricezione merce per taglia: griglia con gli attesi per taglia, «Tutti» = esattamente l'ordinato; stati per articolo (conforme, da completare, eccedenza, taglie diverse); consegne in più tranche; chiusura con differenze da parte di chi riceve, con assunzione di responsabilità. (Fino al 18/11/2026 riceveva solo il punto vendita; ora ricevono anche la logistica, vedi sotto.)
 - Distinte e notifiche con il dettaglio per taglia; differenze da verificare nei pannelli di amministrazione e logistica.
 - Confronto stagioni: variazione sempre dalla stagione più vecchia alla più recente; confronto a parità di data. Budget per categoria, sottocategoria o brand.
 - Avviso di sovrapposizione nella scheda articolo (quanto già comprato della stessa sottocategoria e colore, da quanti fornitori).
@@ -27,13 +27,24 @@ Le due versioni stanno sullo stesso dominio ma non si toccano: la v2 usa un arch
 - Ricerca su più stagioni insieme (scorciatoie «Ultime 2» e «Ultime 3»).
 - Griglia italiana fino alla 64; «Nessuna» fra le condizioni di pagamento suggerite. Gli archivi già caricati vengono adeguati al primo avvio.
 
+## Risposte del cliente del 10/11/2026
+
+- **Sconti a cascata**: sconto commerciale e sconto finanziario, il secondo calcolato sul prezzo già scontato dal primo. Di norma valgono per l'intero ordine (casella «Sconti sull'intero ordine» nella testata); togliendo la spunta ogni articolo ha i suoi. Totali, budget e riepiloghi sono al netto di entrambi; il riepilogo mostra anche il lordo. Gli ordini salvati prima (sconto di riga più sconto extra) vengono adeguati al primo avvio senza cambiare i totali.
+- **Prezzo di vendita** per articolo, inserito dal buyer anche dopo la trasmissione (scheda articolo o «Prezzi di vendita» nell'ordine, con ricarico) e inviato all'amministrazione; non arriva a logistica e negozi.
+- **PDF dell'ordine** con le foto: per l'amministrazione con prezzi d'acquisto, sconti, netti e prezzi di vendita; per logistica e punti vendita senza dati economici. Si genera dall'ordine («Excel e PDF») e dai pacchetti ricevuti.
+- **Excel** con prezzo d'acquisto, i due sconti, prezzo netto, totale netto, prezzo di vendita e codice della griglia taglie.
+- **Colore a testo libero** con suggerimenti: un colore che non c'è viene aggiunto all'elenco (segnato «nuovo»); pulsante per usare il codice colore in fondo al codice articolo.
+- **Continuativo automatico**: spuntato quando lo stesso codice, a meno degli spazi, è già stato acquistato in una stagione precedente; il buyer può toglierlo.
+- **Diritto di reso e acconto** nella testata dell'ordine, con campi separati e facoltativi: reso (percentuale, importo, entro quale data) e acconto (percentuale, importo, data; con la percentuale si vede l'importo corrispondente sul netto). Come pagamento e sconti, arrivano solo all'amministrazione: pacchetto, PDF ed Excel, che ora ha anche la colonna delle condizioni di pagamento.
+- **Ricezione merce anche per la logistica**: la stessa merce passa da logistica e negozio, che lavorano sulle stesse distinte dell'ordine. Una consegna può essere iniziata, proseguita e chiusa (anche con differenze) dall'uno o dall'altro; ogni distinta arriva ad amministrazione, buyer e all'altro ruolo che riceve, e le quantità ancora attese tengono conto di tutte le distinte.
+- **Griglie taglie del cliente** con il loro codice (A, B, C…), visibile e modificabile nel ruolo Configurazione e incluso negli export. Il modello `Per il cliente/Modello griglie taglie v1.02 …xlsx` si importa da Configurazione → Importa da Excel: aggiunge le 26 griglie del cliente e disattiva quelle provvisorie.
+
 ## Cosa contiene
 
 - **Selettore di ruolo** in alto: Buyer, Amministrazione, Logistica, Punto vendita, Configurazione. Ogni ruolo ha il suo colore, il suo pannello e la sua casella in arrivo.
 - **Buyer:** pannello con avvisi sulla stagione, ordini (testata, articoli, foto, griglie taglie, riepilogo per categoria), conferma con controlli bloccanti, trasmissione, ricerca con filtri, report per categoria e brand, confronto fra stagioni, export Excel con immagine principale.
 - **Trasmissione:** crea un pacchetto per ogni destinatario. Logistica e punto vendita lo ricevono senza prezzi, sconti e pagamento.
-- **Punto vendita:** ordini in arrivo con foto e note, ricezione merce per taglia, distinta parziale o totale con segnalazioni, chiusura con differenze.
-- **Logistica:** consultazione di consegne attese, distinte dei negozi e differenze da verificare.
+- **Logistica e punto vendita:** ordini in arrivo con foto e note, ricezione merce per taglia sulle stesse distinte, distinta parziale o totale con segnalazioni, chiusura con differenze, consegne attese e differenze da verificare.
 - **Amministrazione:** ordini ricevuti con dati economici, distinte con percentuale sull'ordinato in capi e valore.
 - **Registro modifiche:** chi ha fatto cosa e quando, con i valori cambiati.
 
@@ -52,10 +63,11 @@ Sul telefono l'archivio si carica dal selettore di file (app File, OneDrive, Air
 | `js/db.js` | archivio (Dexie/IndexedDB), trasmissione, distinte, registro |
 | `js/analisi.js` | ricerca, report, confronto stagioni, avvisi |
 | `js/excel.js` | export Excel (ExcelJS) |
+| `js/pdf.js` | PDF dell'ordine con le foto, con o senza dati economici (jsPDF) |
 | `js/config.js` | configurazione in Excel: esportazione e importazione con anteprima |
-| `js/comp.js` | componenti comuni: foto, mirino, scelta fornitore, riepilogo |
+| `js/comp.js` | componenti comuni: foto, mirino, scelta fornitore e colore, riepilogo |
 | `js/views-*.js` | schermate per ruolo |
-| `vendor/` | Vue 3.5.13, Dexie 4.0.10, ExcelJS 4.4.0 (copie locali, niente CDN) |
+| `vendor/` | Vue 3.5.13, Dexie 4.0.10, ExcelJS 4.4.0, jsPDF 2.5.2 (copie locali, niente CDN) |
 
 Non serve una fase di build: la cartella si pubblica così com'è.
 

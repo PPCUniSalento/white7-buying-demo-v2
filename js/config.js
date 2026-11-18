@@ -193,9 +193,9 @@ export async function esportaConfigurazione() {
   foglio('Sottocategorie', [['Categoria', 24], ['Sottocategoria', 30], ['Attiva', 9]],
     macro.flatMap((m) => M.categorie.filter((c) => c.macroId === m.id).sort(perNome).map((c) => [m.nome, c.nome, SI_NO(attivo(c))])), 3);
   const nomeSub = (c) => `${M.mac.get(c.macroId)?.nome || '?'} > ${c.nome}`;
-  foglio('Griglie', [['Griglia', 26], ['Taglie (separate da ;)', 40], ['Sottocategorie (separate da ;)', 80], ['Attiva', 9]],
+  foglio('Griglie', [['Griglia', 26], ['Taglie (separate da ;)', 40], ['Sottocategorie (separate da ;)', 80], ['Attiva', 9], ['Codice', 9]],
     M.griglie.map((g) => [g.nome, g.taglie.join('; '),
-      M.categorie.filter((c) => (c.griglie || []).includes(g.id)).map(nomeSub).sort().join('; '), SI_NO(attivo(g))]), 4);
+      M.categorie.filter((c) => (c.griglie || []).includes(g.id)).map(nomeSub).sort().join('; '), SI_NO(attivo(g)), g.cod || '']), 4);
   foglio('Fornitori', [['Codice', 14], ['Fornitore', 40], ['Attivo', 9]],
     [...M.fornitori].sort(perNome).map((f) => [f.cod || '', f.nome, SI_NO(attivo(f))]), 3);
   foglio('Colori', [['Colore', 24], ['Attivo', 9]], M.colori.map((c) => [c.nome, SI_NO(attivo(c))]), 2);
@@ -238,7 +238,7 @@ export async function leggiConfigurazione(file) {
     });
     // colonna Attiva/Attivo, se c'è
     const colAtt = testata.findIndex((t) => norm(t).startsWith('attiv'));
-    return { nome: ws.name, righe, colAtt };
+    return { nome: ws.name, righe, colAtt, testata };
   }
   const err = (f, n, t) => errori.push(`${f}, riga ${n}: ${t}`);
   const conta = () => ({ nuove: 0, modificate: 0 });
@@ -362,9 +362,20 @@ export async function leggiConfigurazione(file) {
           perNome.get(k).push(s.id);
         }
       }
+      // colonne riconosciute dall'intestazione (ordine libero); senza intestazioni note: Griglia, Taglie, Sottocategorie
+      const col = (...pref) => f.testata.findIndex((t) => pref.some((x) => norm(t).startsWith(x)));
+      const iNome = col('griglia', 'descrizione', 'nome'), iTaglie = col('taglie'), iSub = col('sottocat'), iCod = col('codice');
+      const pos = (i, d) => (i >= 0 ? i : d);
+      const codVisti = new Map();
       for (const r of f.righe) {
-        const [nome, taglieTxt, subTxt] = r.v;
+        const nome = r.v[pos(iNome, 0)], taglieTxt = r.v[pos(iTaglie, 1)], subTxt = iSub >= 0 || iNome < 0 ? r.v[pos(iSub, 2)] : '';
+        // codice della griglia (10/11/2026): serve per l'import nel gestionale del cliente
+        const cod = iCod >= 0 ? String(r.v[iCod] || '').trim() : undefined;
         if (!nome) { err(f.nome, r.n, 'manca il nome della griglia'); continue; }
+        if (cod) {
+          if (codVisti.has(norm(cod))) { err(f.nome, r.n, `il codice «${cod}» è già della griglia «${codVisti.get(norm(cod))}»`); continue; }
+          codVisti.set(norm(cod), nome);
+        }
         if (visti.has(norm(nome))) { err(f.nome, r.n, `«${nome}» è ripetuta`); continue; }
         visti.add(norm(nome));
         const taglie = String(taglieTxt || '').split(';').map((t) => t.trim()).filter(Boolean);
@@ -390,9 +401,10 @@ export async function leggiConfigurazione(file) {
             mod = true;
           }
           if (att !== undefined && attivo(g) !== att) { g.attivo = att; mod = true; }
+          if (cod !== undefined && (g.cod || '') !== cod) { g.cod = cod; mod = true; }
           if (mod) c.modificate++;
         } else {
-          g = { id: nuovoId(A.griglie), nome, taglie, attivo: att !== false };
+          g = { id: nuovoId(A.griglie), nome, taglie, attivo: att !== false, ...(cod ? { cod } : {}) };
           A.griglie.push(g);
           c.nuove++;
         }

@@ -3,7 +3,7 @@
 
 import {
   APP, RUOLI, GENERI, PROBLEMI, SENZA_TAGLIA, stagioneKey, stagioneOrd, stagioneSucc, oraIso, controllaCodice, totaleRiga,
-  dataDiConsegna, normConsegna, meseRelativo, dataConsegna, piuGiorni, oggi,
+  lordoRiga, prezzoNetto, codiceConfronto, RICEVONO, CAMPI_RESO_ACCONTO, dataGiorno, dataDiConsegna, normConsegna, meseRelativo, dataConsegna, piuGiorni, oggi,
 } from './util.js';
 
 const { reactive } = Vue;
@@ -241,6 +241,31 @@ const ADEGUAMENTI = {
     }
     if (cambiati.length) await db.ordini.bulkPut(cambiati);
   },
+  // sconti commerciale e finanziario a cascata, sull'ordine o per articolo (10/11/2026).
+  // Prima: sconto % di riga e "sconto extra" % sull'ordine applicato al totale. Il totale resta lo stesso:
+  // con sconti di riga l'ordine passa agli sconti per articolo (riga → commerciale, extra → finanziario);
+  // altrimenti lo sconto extra diventa il commerciale dell'ordine.
+  async scontiCascata() {
+    const ordini = [], righe = [];
+    for (const o of M.ord.values()) {
+      if (o.scontoExtra === undefined && o.scontoComm !== undefined) continue;
+      const rr = righeOrdine(o.id);
+      const extra = Number(o.scontoExtra) || 0;
+      o.scontiArticolo = rr.some((r) => Number(r.sconto) > 0);
+      o.scontoComm = o.scontiArticolo ? 0 : extra;
+      o.scontoFin = 0;
+      delete o.scontoExtra;
+      for (const r of rr) {
+        r.scontoComm = o.scontiArticolo ? Number(r.sconto) || 0 : extra;
+        r.scontoFin = o.scontiArticolo ? extra : 0;
+        delete r.sconto;
+        righe.push(r);
+      }
+      ordini.push(o);
+    }
+    if (ordini.length) await db.ordini.bulkPut(ordini);
+    if (righe.length) await db.righe.bulkPut(righe);
+  },
 };
 async function adegua() {
   const fatti = new Set((await db.meta.get('adeguamenti'))?.v || []);
@@ -284,6 +309,42 @@ export async function nuovoFornitore(nome, cod = '') {
   await logga('Nuovo fornitore', 'fornitore', f.id, f.nome);
   return f;
 }
+// Colore libero (10/11/2026): alfanumerico e senza limiti di lunghezza ("01DB", "9300", "DARK NATURAL").
+// Si riusa il colore già censito con lo stesso nome; altrimenti se ne censisce uno nuovo, che resta
+// nell'elenco per report e statistiche.
+const normColore = (s) => (s || '').trim().replace(/\s+/g, ' ').toUpperCase();
+export const trovaColore = (nome) => M.colori.find((c) => normColore(c.nome) === normColore(nome)) || null;
+export async function coloreDaTesto(nome) {
+  const t = (nome || '').trim().replace(/\s+/g, ' ');
+  if (!t) return null;
+  const c = trovaColore(t);
+  if (c) {
+    if (!attivo(c)) await salvaAnagrafica('colori', M.colori.map((x) => (x.id === c.id ? { ...x, attivo: true } : x)));
+    return c;
+  }
+  const n = { id: nuovoId(M.colori), nome: t.toUpperCase(), nuovo: true, creato: oraIso() };
+  await salvaAnagrafica('colori', [...M.colori, n]);
+  await logga('Nuovo colore', 'colore', n.id, n.nome);
+  return n;
+}
+
+// Acquisti dello stesso articolo nelle stagioni precedenti: codice identico a meno degli spazi,
+// colore compreso (lo stesso modello in un colore nuovo non è continuativo). Vale anche un vecchio
+// codice agganciato all'articolo.
+export function acquistiPrecedenti(r) {
+  const o = M.ord.get(r.ordineId);
+  const codici = new Set([r.codArt, ...(r.vecchiCodici || [])].map(codiceConfronto).filter((c) => c.length >= 4));
+  if (!o || !codici.size) return [];
+  const so = stagioneOrd(stagioneOrdine(o));
+  const out = [];
+  for (const x of M.rig.values()) {
+    if (x.ordineId === r.ordineId || !codici.has(codiceConfronto(x.codArt))) continue;
+    const ox = M.ord.get(x.ordineId);
+    if (ox && stagioneOrd(stagioneOrdine(ox)) < so) out.push(x);
+  }
+  return out;
+}
+
 // Fornitori con un nome simile (per evitare doppioni scritti in modo diverso)
 const normNome = (s) => (s || '').toLowerCase().replace(/\b(s\.?r\.?l|s\.?p\.?a|s\.?n\.?c|s\.?a\.?s|ltd|inc|gmbh|srls)\b\.?/g, '').replace(/[^a-z0-9]/g, '');
 export function fornitoriSimili(nome) {
@@ -342,13 +403,15 @@ export function stagioni() {
   return [...s].sort((a, b) => stagioneOrd(b) - stagioneOrd(a));
 }
 
-export function riepilogo(righe, scontoExtra = 0) {
+// valore: netto degli sconti; lordo: prezzo × quantità
+export function riepilogo(righe) {
   const perMacro = new Map();
-  let pezzi = 0, valore = 0;
+  let pezzi = 0, valore = 0, lordo = 0;
   for (const r of righe) {
     const v = totaleRiga(r);
     pezzi += r.qta || 0;
     valore += v;
+    lordo += lordoRiga(r);
     const mk = r.macroId || 0;
     if (!perMacro.has(mk)) perMacro.set(mk, { id: mk, nome: nomeMacro(r.macroId), pezzi: 0, valore: 0, cat: new Map() });
     const m = perMacro.get(mk);
@@ -362,7 +425,7 @@ export function riepilogo(righe, scontoExtra = 0) {
   }
   const macro = [...perMacro.values()].sort((a, b) => b.valore - a.valore)
     .map((m) => ({ ...m, cat: [...m.cat.values()].sort((a, b) => b.valore - a.valore) }));
-  return { pezzi, valore, scontato: valore * (1 - (scontoExtra || 0) / 100), macro };
+  return { pezzi, valore, lordo, macro };
 }
 
 // ---------- ricezione per taglia ----------
@@ -440,6 +503,9 @@ export function statoConsegna(o) {
 const ETICHETTE_CAMPI = {
   aziendaId: 'società', fornitoreId: 'fornitore', anno: 'anno', stagione: 'stagione', pagamento: 'pagamento',
   consegnaDa: 'consegna da', consegnaA: 'consegna a', scontoExtra: 'sconto extra %', note: 'note',
+  scontiArticolo: 'sconti per articolo', scontoComm: 'sconto commerciale %', scontoFin: 'sconto finanziario %',
+  prezzoVendita: 'prezzo di vendita',
+  resoPerc: 'reso %', resoImporto: 'reso importo', resoEntro: 'reso entro', accontoPerc: 'acconto %', accontoImporto: 'acconto importo', accontoData: 'data acconto',
   codArt: 'codice', continuativo: 'continuativo', vecchiCodici: 'vecchi codici', macroId: 'categoria', catId: 'sottocategoria',
   coloreId: 'colore', genere: 'genere', prezzo: 'prezzo', sconto: 'sconto %', qta: 'pezzi', grigliaId: 'griglia',
   taglie: 'taglie', descrizione: 'descrizione', dettagli: 'dettagli', misure: 'misure', composizione: 'composizione',
@@ -453,10 +519,11 @@ function valoreLeggibile(k, v) {
     case 'catId': return nomeCat(v);
     case 'coloreId': return nomeColore(v);
     case 'grigliaId': return M.gri.get(v)?.nome || v;
-    case 'continuativo': return v ? 'sì' : 'no';
+    case 'continuativo': case 'scontiArticolo': return v ? 'sì' : 'no';
     case 'vecchiCodici': return v.join(', ') || '–';
     case 'taglie': return Object.entries(v).filter(([, q]) => q).map(([t, q]) => `${t}:${q}`).join(' ') || '–';
     case 'consegnaDa': case 'consegnaA': return dataConsegna(v);
+    case 'resoEntro': case 'accontoData': return dataGiorno(v);
     default: return String(v);
   }
 }
@@ -475,6 +542,12 @@ export async function salvaOrdine(o) {
   x.modificato = oraIso();
   x.id = await db.ordini.put(x);
   M.ord.set(x.id, x);
+  // sconti sull'intero ordine: valgono per tutti i suoi articoli
+  if (!x.scontiArticolo) {
+    const da = righeOrdine(x.id).filter((r) => r.scontoComm !== (x.scontoComm || 0) || r.scontoFin !== (x.scontoFin || 0));
+    for (const r of da) { r.scontoComm = x.scontoComm || 0; r.scontoFin = x.scontoFin || 0; }
+    if (da.length) await db.righe.bulkPut(da);
+  }
   tocca();
   return x;
 }
@@ -487,7 +560,7 @@ export async function nuovoOrdine() {
     aziendaId: state.imp.aziendaDefault, fornitoreId: null, data: oraIso(), anno, stagione: stag,
     stato: 'bozza', pagamento: null,
     consegnaDa, consegnaA,
-    scontoExtra: 0, note: '', dtTrasm: null, storico: false, creatoDa: state.ruolo, creato: oraIso(),
+    scontiArticolo: false, scontoComm: 0, scontoFin: 0, ...Object.fromEntries(CAMPI_RESO_ACCONTO.map((k) => [k, null])), note: '', dtTrasm: null, storico: false, creatoDa: state.ruolo, creato: oraIso(),
   });
   await logga('Creato ordine', 'ordine', o.id);
   return o;
@@ -505,6 +578,9 @@ export async function eliminaOrdine(id) {
 export async function salvaRiga(r) {
   const x = JSON.parse(JSON.stringify(r));
   x.modificato = oraIso();
+  const o = M.ord.get(x.ordineId);
+  if (o && !o.scontiArticolo) { x.scontoComm = o.scontoComm || 0; x.scontoFin = o.scontoFin || 0; }
+  delete x.sconto;
   x.id = await db.righe.put(x);
   M.rig.set(x.id, x);
   aggiungiARigheOrdine(x);
@@ -622,7 +698,10 @@ export function pacchetto(ordineId, ruoloDest) {
     id: o.id, azienda: nomeAzienda(o.aziendaId), fornitore: nomeFornitore(o.fornitoreId),
     stagione: stagioneOrdine(o), data: o.data, consegnaDa: o.consegnaDa, consegnaA: o.consegnaA, note: o.note || '',
   };
-  if (prezzi) Object.assign(testa, { pagamento: o.pagamento, scontoExtra: o.scontoExtra || 0 });
+  if (prezzi) {
+    Object.assign(testa, { pagamento: o.pagamento, scontiArticolo: !!o.scontiArticolo, scontoComm: o.scontoComm || 0, scontoFin: o.scontoFin || 0 });
+    for (const k of CAMPI_RESO_ACCONTO) testa[k] = o[k] ?? null;
+  }
   const righe = righeOrdine(ordineId).map((r) => {
     const x = {
       id: r.id, codArt: r.codArt, vecchiCodici: r.vecchiCodici || [], continuativo: !!r.continuativo,
@@ -631,7 +710,7 @@ export function pacchetto(ordineId, ruoloDest) {
       descrizione: r.descrizione || '', dettagli: r.dettagli || '', misure: r.misure || '',
       composizione: r.composizione || '', note: r.note || '', foto: fotoRiga(r.id).map((f) => f.id),
     };
-    if (prezzi) Object.assign(x, { prezzo: r.prezzo, sconto: r.sconto || 0 });
+    if (prezzi) Object.assign(x, { prezzo: r.prezzo, scontoComm: r.scontoComm || 0, scontoFin: r.scontoFin || 0, prezzoVendita: r.prezzoVendita ?? null });
     return x;
   });
   return { testa, righe, prezzi, ruolo: ruoloDest };
@@ -667,6 +746,41 @@ export async function trasmetti(ids, destinatari) {
   tocca();
 }
 
+// Prezzi di vendita (10/11/2026): facoltativi, si possono inserire anche a ordine trasmesso o chiuso
+// e si mandano all'amministrazione, che li vede nel suo pacchetto dell'ordine.
+export async function salvaPrezzoVendita(rigaId, valore) {
+  const r = M.rig.get(rigaId);
+  const v = valore === '' || valore == null || !(Number(valore) >= 0) ? null : Math.round(Number(valore) * 100) / 100;
+  if (!r || (r.prezzoVendita ?? null) === v) return;
+  const prima = r.prezzoVendita ?? null;
+  r.prezzoVendita = v;
+  r.modificato = oraIso();
+  await db.righe.put(r);
+  await logga('Prezzo di vendita', 'articolo', r.id, `${r.codArt} – ${descriviCambio('prezzoVendita', prima, v)}`, { ordineId: r.ordineId });
+  tocca();
+}
+export async function inviaPrezziVendita(ordineId) {
+  const o = M.ord.get(ordineId);
+  const n = righeOrdine(ordineId).filter((r) => r.prezzoVendita != null).length;
+  // il pacchetto dell'amministrazione si aggiorna (simula il sistema centrale), più una notifica
+  let m = [...M.messaggi.values()].find((x) => x.tipo === 'ordine' && x.ordineId === ordineId && x.a === 'amministrazione');
+  if (m) { m.payload = pacchetto(ordineId, 'amministrazione'); await db.messaggi.put(m); }
+  else {
+    m = await aggiungiMessaggio({
+      a: 'amministrazione', da: state.ruolo, tipo: 'ordine', ordineId, data: oraIso(), letto: false,
+      titolo: titoloOrdine(o), payload: pacchetto(ordineId, 'amministrazione'),
+    });
+  }
+  await aggiungiMessaggio({
+    a: 'amministrazione', da: state.ruolo, tipo: 'prezzi', ordineId, data: oraIso(), letto: false,
+    titolo: `Prezzi di vendita (${n} articol${n === 1 ? 'o' : 'i'}) – ${titoloOrdine(o)}`,
+  });
+  await salvaOrdine({ ...o, prezziVenditaInviati: oraIso() });
+  await logga('Inviati i prezzi di vendita all\'amministrazione', 'ordine', ordineId, `${n} articol${n === 1 ? 'o' : 'i'}`);
+  tocca();
+  return n;
+}
+
 // Riepilogo delle differenze di un ordine, per notifiche e chiusura
 function riepilogoDifferenze(ordineId) {
   const st = statoRigheOrdine(ordineId);
@@ -681,8 +795,10 @@ function riepilogoDifferenze(ordineId) {
   return { mancanti, eccedenze, righe, discrepanze: righe.filter((x) => DISCREPANZE.includes(x.stato)).length };
 }
 
+// Avvisi di ricezione: amministrazione, buyer e l'altro ruolo che riceve (logistica o negozio), che lavora
+// sulle stesse distinte (10/11/2026)
 async function avvisa(ordineId, tipo, titolo, extra = {}) {
-  for (const dest of ['amministrazione', 'buyer']) {
+  for (const dest of ['amministrazione', 'buyer', ...RICEVONO.filter((r) => r !== state.ruolo)]) {
     await aggiungiMessaggio({ a: dest, da: state.ruolo, tipo, ordineId, data: oraIso(), letto: false, titolo, ...extra });
   }
 }
@@ -708,7 +824,7 @@ export async function inviaDistinta({ ordineId, msgId, righe, note, chiusura = n
     if (c.stato !== 'conforme') tutteConformi = false;
     pezziOrdinati += c.totOrd;
     pezziConformi += c.conformi;
-    const pu = (r.prezzo || 0) * (1 - (r.sconto || 0) / 100);
+    const pu = prezzoNetto(r);
     valOrd += pu * c.totOrd;
     valRic += pu * c.conformi;
     if (somma(ricevute) || x?.problema) {
@@ -775,9 +891,9 @@ export async function salvaBudget(sk, livello, id, valore) {
   tocca();
 }
 
-export function nonLetti(ruolo) {
+export function nonLetti(ruolo, tipi = null) {
   let n = 0;
-  for (const m of M.messaggi.values()) if (m.a === ruolo && !m.letto) n++;
+  for (const m of M.messaggi.values()) if (m.a === ruolo && !m.letto && (!tipi || tipi.includes(m.tipo))) n++;
   return n;
 }
 

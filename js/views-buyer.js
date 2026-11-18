@@ -5,14 +5,16 @@ import {
   salvaOrdine, nuovoOrdine, eliminaOrdine, salvaRiga, eliminaRiga, erroriRiga, erroriOrdine, cambiaStato,
   trasmetti, riepilogo, logga, salvaImpostazioni, nonLetti, segnaLetto, titoloOrdine, descriviCambio, chiaveBudget,
   consegnaProposta, avvisiOrdine, oltreCartellino, lunghezzaCartellino, inRitardo, attivo, CAMPI_CARTELLINO,
+  acquistiPrecedenti, salvaPrezzoVendita, inviaPrezziVendita,
 } from './db.js';
 import { apriMessaggio } from './views-arrivi.js';
 import { avvisi } from './analisi.js';
 import { esportaRighe } from './excel.js';
+import { esportaPdf } from './pdf.js';
 import { proponiDaFoto, statoAI, campiAI, azzeraAI, azzeraAIOrdine } from './ai.js';
 import {
   RUOLI, DESTINATARI, STATI, euro, euro0, num, perc, data, dataOra, dataConsegna, stagioneNome, stagionePrec, stagioneOrd,
-  totaleRiga, controllaCodice, debounce, inApp, nativo,
+  totaleRiga, prezzoNetto, testoSconti, codiceConfronto, controllaCodice, debounce, inApp, nativo, CAMPI_RESO_ACCONTO,
 } from './util.js';
 import { toast } from './comp.js';
 
@@ -40,7 +42,7 @@ const BarraTotale = {
     const aperto = ref(false);
     const o = computed(() => { state.rev; return M.ord.get(p.ordineId); });
     const righe = computed(() => { state.rev; return [...righeOrdine(p.ordineId)]; });
-    const r = computed(() => riepilogo(righe.value, o.value?.scontoExtra));
+    const r = computed(() => riepilogo(righe.value));
     return { aperto, o, righe, r, euro, num };
   },
   template: `<div class="barra-tot" role="button" @click="aperto = true">
@@ -49,7 +51,7 @@ const BarraTotale = {
       <ic n="up" :s="18"/>
     </div>
     <sheet v-if="aperto" :titolo="'Riepilogo ordine n. ' + ordineId" @chiudi="aperto = false">
-      <riepilogo :righe="righe" :sconto-extra="o?.scontoExtra"/>
+      <riepilogo :righe="righe"/>
     </sheet>`,
 };
 
@@ -59,13 +61,13 @@ const PannelloRiepilogo = {
   setup(p) {
     const o = computed(() => { state.rev; return M.ord.get(p.ordineId); });
     const righe = computed(() => { state.rev; return [...righeOrdine(p.ordineId)]; });
-    const r = computed(() => riepilogo(righe.value, o.value?.scontoExtra));
+    const r = computed(() => riepilogo(righe.value));
     return { o, righe, r, euro, num };
   },
   template: `<aside class="col-riep"><section class="card riep-fisso">
     <div class="card-h"><h2>Riepilogo ordine n. {{ ordineId }}</h2></div>
     <div class="riep-tot"><b>{{ euro(r.valore) }}</b><span>{{ num(r.pezzi) }} capi · {{ righe.length }} articol{{ righe.length === 1 ? 'o' : 'i' }}</span></div>
-    <riepilogo :righe="righe" :sconto-extra="o?.scontoExtra"/>
+    <riepilogo :righe="righe"/>
   </section></aside>`,
 };
 
@@ -245,7 +247,7 @@ export const Ordine = {
     const o = reactive(JSON.parse(JSON.stringify(orig)));
     const snapshot = JSON.stringify(orig);
     const modificabile = computed(() => o.stato === 'bozza' && state.ruolo === 'buyer');
-    const errori = ref(null), avvisi = ref(null), cronologia = ref(false), esporta = ref(false);
+    const errori = ref(null), avvisi = ref(null), cronologia = ref(false), esporta = ref(false), prezziVendita = ref(false);
     const salva = debounce(() => salvaOrdine(o), 400);
     watch(o, () => { if (modificabile.value) salva(); }, { deep: true });
     watch(() => [o.anno, o.stagione], () => { /* stagione cambiata: aggiorna periodo di consegna proposto */
@@ -260,12 +262,28 @@ export const Ordine = {
       if (!modificabile.value) return;
       salva.flush();
       const prima = JSON.parse(snapshot);
-      const cambi = ['aziendaId', 'fornitoreId', 'anno', 'stagione', 'pagamento', 'consegnaDa', 'consegnaA', 'scontoExtra', 'note']
+      const cambi = ['aziendaId', 'fornitoreId', 'anno', 'stagione', 'pagamento', 'consegnaDa', 'consegnaA', 'scontiArticolo', 'scontoComm', 'scontoFin', ...CAMPI_RESO_ACCONTO, 'note']
         .filter((k) => JSON.stringify(prima[k]) !== JSON.stringify(o[k]))
         .map((k) => descriviCambio(k, prima[k], o[k]));
       if (cambi.length) logga('Modificata testata ordine', 'ordine', o.id, cambi.join('; '));
     });
     const righe = computed(() => { state.rev; return [...righeOrdine(p.id)]; });
+    // Sconti (10/11/2026): sull'intero ordine (spunta, valori nella testata) oppure articolo per articolo
+    const scontiSuOrdine = computed({
+      get: () => !o.scontiArticolo,
+      set: (v) => {
+        if (v) {
+          const diversi = righe.value.filter((r) => (r.scontoComm || 0) !== (o.scontoComm || 0) || (r.scontoFin || 0) !== (o.scontoFin || 0));
+          if (diversi.length && !confirm(`${diversi.length} articol${diversi.length === 1 ? 'o ha' : 'i hanno'} sconti propri: con gli sconti sull'intero ordine valgono per tutti quelli della testata. Continuare?`)) return;
+        }
+        o.scontiArticolo = !v;
+      },
+    });
+    // acconto in percentuale: importo corrispondente sul netto attuale dell'ordine (solo come aiuto)
+    const accontoDaPerc = computed(() => {
+      const p = Number(o.accontoPerc);
+      return p > 0 ? righe.value.reduce((s, r) => s + totaleRiga(r), 0) * p / 100 : 0;
+    });
     const nErr = (r) => { state.rev; return erroriRiga(r).length; };
     const nFoto = (r) => { state.rev; return fotoRiga(r.id).length; };
     const nConAI = computed(() => { state.rev; return righe.value.filter((r) => campiAI(r).length).length; });
@@ -288,7 +306,8 @@ export const Ordine = {
       const r = await salvaRiga({
         ordineId: p.id, codArt: '', continuativo: false, vecchiCodici: [],
         macroId: ultimo?.macroId || null, catId: ultimo?.catId || null, coloreId: null,
-        genere: ultimo?.genere || state.imp.genereDefault, prezzo: null, sconto: 0, qta: null,
+        genere: ultimo?.genere || state.imp.genereDefault, prezzo: null, prezzoVendita: null,
+        scontoComm: o.scontiArticolo ? ultimo?.scontoComm || 0 : o.scontoComm || 0, scontoFin: o.scontiArticolo ? ultimo?.scontoFin || 0 : o.scontoFin || 0, qta: null,
         grigliaId: ultimo?.grigliaId || null, taglie: null, descrizione: '', dettagli: '', misure: '', composizione: '', note: '',
         nuovo: true,
       });
@@ -323,10 +342,34 @@ export const Ordine = {
         titolo: `Ordine n. ${p.id} – ${nomeFornitore(o.fornitoreId)} – ${stagioneNome(stagioneSel.value)}`, prezzi,
       });
     }
+    // PDF (10/11/2026): con prezzi per l'amministrazione, senza per logistica e negozi; sempre con le foto
+    async function pdf(prezzi) {
+      esporta.value = false;
+      toast('Preparazione PDF…');
+      try {
+        await esportaPdf(p.id, { prezzi });
+      } catch (e) { toast(`PDF non creato: ${e.message || e}`, 'err'); }
+    }
+    // prezzi di vendita: anche a ordine trasmesso o chiuso, poi si mandano all'amministrazione
+    const puoPrezziVendita = computed(() => state.ruolo === 'buyer' && !o.storico);
+    const pvTimer = new Map();
+    function cambiaPv(r, v) {
+      clearTimeout(pvTimer.get(r.id));
+      pvTimer.set(r.id, setTimeout(() => salvaPrezzoVendita(r.id, v), 400));
+    }
+    const nPv = computed(() => { state.rev; return righe.value.filter((r) => r.prezzoVendita != null).length; });
+    const ricarico = (r) => (r.prezzoVendita && prezzoNetto(r) ? r.prezzoVendita / prezzoNetto(r) : null);
+    const pvInviati = computed(() => { state.rev; return M.ord.get(p.id)?.prezziVenditaInviati || null; });
+    async function inviaPv() {
+      for (const t of pvTimer.values()) clearTimeout(t);
+      const n = await inviaPrezziVendita(p.id);
+      toast(`Prezzi di vendita di ${n} articol${n === 1 ? 'o' : 'i'} inviati all'amministrazione`);
+    }
     return {
       mancante: false, o, modificabile, errori, avvisi, cronologia, esporta, stagioneSel, righe, nErr, nFoto, cartellino, log, distinte, nConAI, azzeraAITutti,
-      nuovoArticolo, conferma, riapri, elimina, excel, M, state, stagioni: stagioniDisponibili(), aziende: computed(() => selezionabili(M.aziende, o.aziendaId)),
-      stagioneNome, nomeFornitore, nomeCat, nomeColore, euro, num, data, dataOra, totaleRiga, RUOLI, elencoPagamenti,
+      nuovoArticolo, conferma, riapri, elimina, excel, pdf, M, state, stagioni: stagioniDisponibili(), aziende: computed(() => selezionabili(M.aziende, o.aziendaId)),
+      stagioneNome, nomeFornitore, nomeCat, nomeColore, euro, num, data, dataOra, totaleRiga, RUOLI, elencoPagamenti, testoSconti, scontiSuOrdine,
+      prezziVendita, puoPrezziVendita, cambiaPv, nPv, ricarico, pvInviati, inviaPv, prezzoNetto, perc, accontoDaPerc,
     };
   },
   template: `<div class="pagina con-barra layout-ordine" v-if="!mancante"><div class="col-main">
@@ -353,7 +396,21 @@ export const Ordine = {
           <datalist id="elenco-pagamenti"><option v-for="p in elencoPagamenti()" :key="p" :value="p"></option></datalist></label>
         <label class="cons">Consegna da{{ $ob('consegna') }}<data-consegna v-model="o.consegnaDa" :disabled="!modificabile"/></label>
         <label class="cons">Consegna entro{{ $ob('consegna') }}<data-consegna v-model="o.consegnaA" fine :disabled="!modificabile"/></label>
-        <label>Sconto extra %<input class="inp" type="number" inputmode="decimal" min="0" max="100" v-model.number="o.scontoExtra" :disabled="!modificabile"></label>
+        <label class="largo check"><input type="checkbox" v-model="scontiSuOrdine" :disabled="!modificabile"> Sconti sull'intero ordine
+          <small class="aiuto">{{ scontiSuOrdine ? 'Valgono per tutti gli articoli. Il finanziario si calcola sul prezzo già scontato del commerciale.' : 'Gli sconti si indicano articolo per articolo, nella scheda di ciascuno.' }}</small></label>
+        <template v-if="scontiSuOrdine">
+          <label>Sconto commerciale %<input class="inp" type="number" inputmode="decimal" min="0" max="100" v-model.number="o.scontoComm" :disabled="!modificabile"></label>
+          <label>Sconto finanziario %<input class="inp" type="number" inputmode="decimal" min="0" max="100" v-model.number="o.scontoFin" :disabled="!modificabile"></label>
+        </template>
+        <div class="largo sez-testata"><b>Diritto di reso e acconto</b>
+          <small class="aiuto">Facoltativi. Vanno all'amministrazione (pacchetto, Excel, PDF), non a logistica e negozi.</small></div>
+        <label>Reso %<input class="inp" type="number" inputmode="decimal" min="0" max="100" v-model="o.resoPerc" :disabled="!modificabile"></label>
+        <label>Reso: importo €<input class="inp" type="number" inputmode="decimal" min="0" step="0.01" v-model="o.resoImporto" :disabled="!modificabile"></label>
+        <label>Reso entro il<input class="inp" type="date" v-model="o.resoEntro" :disabled="!modificabile"></label>
+        <label>Acconto %<input class="inp" type="number" inputmode="decimal" min="0" max="100" v-model="o.accontoPerc" :disabled="!modificabile">
+          <small v-if="accontoDaPerc" class="aiuto">pari a {{ euro(accontoDaPerc) }} sul netto attuale</small></label>
+        <label>Acconto: importo €<input class="inp" type="number" inputmode="decimal" min="0" step="0.01" v-model="o.accontoImporto" :disabled="!modificabile"></label>
+        <label>Acconto: data<input class="inp" type="date" v-model="o.accontoData" :disabled="!modificabile"></label>
         <label class="largo">Note generali / riferimenti interni<textarea class="inp" rows="2" v-model="o.note" :disabled="!modificabile"></textarea></label>
       </div>
     </section>
@@ -371,7 +428,7 @@ export const Ordine = {
             <span v-else-if="!o.storico && nFoto(r) < state.cfg.minFoto" class="err-mini">{{ nFoto(r) }} foto</span>
             <span v-if="r.aiCampi && r.aiCampi.length" class="ai-mini">AI da verificare</span>
             <span v-if="!o.storico && cartellino(r)" class="avv-mini">cartellino {{ cartellino(r) }}/{{ state.cfg.cartellino.limite }} caratteri</span></div>
-          <div class="dx"><b>{{ num(r.qta) }} pz</b><small>{{ euro(r.prezzo) }}</small><small v-if="r.sconto">−{{ r.sconto }}%</small>
+          <div class="dx"><b>{{ num(r.qta) }} pz</b><small>{{ euro(r.prezzo) }}</small><small v-if="testoSconti(r)">−{{ testoSconti(r) }}</small>
             <b>{{ euro(totaleRiga(r)) }}</b></div></li>
         <li v-if="!righe.length" class="vuoto">Nessun articolo. <button v-if="modificabile" class="link" @click="nuovoArticolo">Aggiungi il primo</button></li>
       </ul>
@@ -380,7 +437,8 @@ export const Ordine = {
     <div class="azioni-pagina">
       <button v-if="o.stato === 'bozza'" class="btn primario" @click="conferma()"><ic n="check"/> Conferma ordine</button>
       <a v-if="o.stato === 'confermato'" class="btn primario" :href="'#/trasmissione?sel=' + o.id"><ic n="send"/> Trasmetti</a>
-      <button class="btn" @click="esporta = true" :disabled="!righe.length"><ic n="download"/> Excel</button>
+      <button class="btn" @click="esporta = true" :disabled="!righe.length"><ic n="download"/> Excel e PDF</button>
+      <button v-if="puoPrezziVendita && righe.length" class="btn" @click="prezziVendita = true"><ic n="tag"/> Prezzi di vendita<template v-if="nPv"> ({{ nPv }})</template></button>
       <button class="btn" @click="cronologia = true"><ic n="list"/> Cronologia</button>
       <button v-if="modificabile && nConAI" class="btn" @click="azzeraAITutti"><ic n="back"/> Azzera AI ({{ nConAI }})</button>
       <button v-if="o.stato === 'bozza'" class="btn rosso" @click="elimina"><ic n="trash"/> Elimina bozza</button>
@@ -411,11 +469,30 @@ export const Ordine = {
       <div class="azioni-pagina"><button class="btn primario" @click="conferma(true)"><ic n="check"/> Conferma comunque</button>
         <button class="btn" @click="avvisi = null">Torna all'ordine</button></div>
     </sheet>
-    <sheet v-if="esporta" titolo="Esporta in Excel" @chiudi="esporta = false">
+    <sheet v-if="esporta" titolo="Esporta l'ordine" @chiudi="esporta = false">
       <div class="menu-azioni">
-        <button @click="excel(true)"><ic n="download"/> Completo (con prezzi e sconti)</button>
-        <button @click="excel(false)"><ic n="download"/> Per logistica e negozi (senza dati economici)</button>
+        <button @click="excel(true)"><ic n="download"/> Excel per l'amministrazione (con prezzi e sconti)</button>
+        <button @click="pdf(true)"><ic n="download"/> PDF per l'amministrazione (con prezzi e foto)</button>
+        <button @click="pdf(false)"><ic n="download"/> PDF per logistica e negozi (con foto, senza dati economici)</button>
+        <button @click="excel(false)"><ic n="download"/> Excel senza dati economici</button>
       </div>
+    </sheet>
+    <sheet v-if="prezziVendita" titolo="Prezzi di vendita" alto @chiudi="prezziVendita = false">
+      <p class="muted">Facoltativi. Si possono inserire anche dopo la trasmissione o la chiusura dell'ordine e si mandano all'amministrazione,
+        l'unica che li vede insieme ai prezzi d'acquisto.</p>
+      <ul class="lista pv">
+        <li v-for="r in righe" :key="r.id"><thumb :riga-id="r.id"/>
+          <div class="grow"><b class="mono">{{ r.codArt || '(senza codice)' }}</b><small>{{ r.descrizione || '–' }}</small>
+            <small>acquisto {{ euro(prezzoNetto(r)) }}<template v-if="testoSconti(r)"> netto ({{ euro(r.prezzo) }} −{{ testoSconti(r) }})</template>
+              <template v-if="ricarico(r)"> · ricarico {{ ricarico(r).toLocaleString('it-IT', {maximumFractionDigits: 2}) }}</template></small></div>
+          <label class="pv-inp">€<input class="inp" type="number" inputmode="decimal" min="0" step="0.01" :value="r.prezzoVendita"
+            @input="cambiaPv(r, $event.target.value)" aria-label="Prezzo di vendita"></label></li>
+      </ul>
+      <p v-if="pvInviati" class="muted">Ultimo invio all'amministrazione: {{ dataOra(pvInviati) }}.</p>
+      <div class="azioni-pagina">
+        <button class="btn primario" :disabled="!nPv || !o.dtTrasm" @click="inviaPv"><ic n="send"/> Invia all'amministrazione</button>
+        <button class="btn" @click="prezziVendita = false">Chiudi</button></div>
+      <p v-if="!o.dtTrasm" class="muted">L'amministrazione li riceve con la trasmissione dell'ordine.</p>
     </sheet>
     <sheet v-if="cronologia" titolo="Cronologia modifiche" alto @chiudi="cronologia = false">
       <ul class="lista log"><li v-for="e in log" :key="e.id"><div><b>{{ e.azione }}</b>
@@ -444,12 +521,19 @@ export const Articolo = {
     const modificabile = ord.stato === 'bozza' && state.ruolo === 'buyer';
     const nuovoCod = ref('');
 
-    const copiaPerSalvare = () => {
-      const n = (v) => (v === '' || v == null ? null : Number(v));
-      return { ...r, prezzo: n(r.prezzo), sconto: n(r.sconto) || 0, qta: n(r.qta) };
-    };
+    const n = (v) => (v === '' || v == null ? null : Number(v));
+    const copiaPerSalvare = () => ({
+      ...r, prezzo: n(r.prezzo), scontoComm: n(r.scontoComm) || 0, scontoFin: n(r.scontoFin) || 0, qta: n(r.qta), prezzoVendita: n(r.prezzoVendita),
+    });
     const salva = debounce(() => salvaRiga(copiaPerSalvare()), 350);
     watch(r, () => { if (modificabile) salva(); }, { deep: true });
+    // sconti dell'articolo: propri se l'ordine li gestisce per articolo, altrimenti quelli della testata
+    const scontiArticolo = !!ord.scontiArticolo;
+    if (!scontiArticolo) { r.scontoComm = ord.scontoComm || 0; r.scontoFin = ord.scontoFin || 0; }
+    // prezzo di vendita: facoltativo, il buyer lo può inserire anche a ordine trasmesso o chiuso
+    const pvModificabile = state.ruolo === 'buyer' && !ord.storico;
+    const salvaPv = debounce(() => salvaPrezzoVendita(r.id, r.prezzoVendita), 400);
+    watch(() => r.prezzoVendita, () => { if (!modificabile && pvModificabile) salvaPv(); });
 
     const macro = computed(() => selezionabili(M.macro, r.macroId));
     const categorie = computed(() => selezionabili(M.categorie.filter((c) => c.macroId === r.macroId), r.catId).sort((a, b) => a.nome.localeCompare(b.nome)));
@@ -493,7 +577,23 @@ export const Articolo = {
       const campi = CAMPI_CARTELLINO.filter(([k]) => state.cfg.cartellino.campi.includes(k)).map(([, n]) => n.toLowerCase());
       return { n: lunghezzaCartellino(r), lim, oltre: lim > 0 && lunghezzaCartellino(r) > lim, campi: campi.join(' + ') };
     });
-    const duplicato = computed(() => !!r.codArt && righeOrdine(p.ordineId).some((x) => x.id !== r.id && x.codArt === r.codArt.trim()));
+    const duplicato = computed(() => !!r.codArt && righeOrdine(p.ordineId).some((x) => x.id !== r.id && codiceConfronto(x.codArt) === codiceConfronto(r.codArt)));
+    // codice colore in fondo al codice articolo: proposto per il campo Colore se è vuoto
+    const coloreDalCodice = computed(() => {
+      const c = (r.codArt || '').trim();
+      return state.cfg.coloreInCodice && c.includes(' ') ? c.slice(c.lastIndexOf(' ') + 1) : '';
+    });
+    // Continuativo automatico (10/11/2026): spunta quando lo stesso codice, a meno degli spazi, è stato
+    // acquistato in una stagione precedente. Un colore nuovo non lo è. Se il buyer cambia la spunta a mano,
+    // l'automatismo si ferma per quell'articolo.
+    const precedenti = computed(() => acquistiPrecedenti({ ordineId: r.ordineId, codArt: r.codArt, vecchiCodici: r.vecchiCodici }));
+    watch(precedenti, (x) => {
+      if (!modificabile || r.continuativoManuale) return;
+      if (x.length && !r.continuativo) { r.continuativo = true; r.continuativoAuto = true; }
+      else if (!x.length && r.continuativoAuto) { r.continuativo = false; r.continuativoAuto = false; }
+    }, { immediate: true });
+    const spuntaContinuativo = () => { r.continuativoManuale = true; r.continuativoAuto = false; };
+    const ultimaPrec = computed(() => precedenti.value.map((x) => stagioneOrdine(M.ord.get(x.ordineId))).sort((a, b) => stagioneOrd(b) - stagioneOrd(a))[0] || '');
     // Sovrapposizioni: quanto si è già comprato della stessa sottocategoria (e colore) nella stagione,
     // da quanti fornitori, e quanto nella stessa stagione dell'anno prima (errori di acquisto per eccesso o prudenza)
     const sovrapp = computed(() => {
@@ -519,13 +619,13 @@ export const Articolo = {
       ? `#/ricerca?stagione=${sovrapp.value.sk}&macroId=${r.macroId}&catId=${r.catId}${r.coloreId ? '&coloreId=' + r.coloreId : ''}` : '#/ricerca'));
 
     const storico = computed(() => {
-      const cod = (r.codArt || '').trim();
+      const cod = codiceConfronto(r.codArt);
       if (cod.length < 4) return null;
-      const codici = new Set([cod, ...(r.vecchiCodici || [])]);
+      const codici = new Set([cod, ...(r.vecchiCodici || []).map(codiceConfronto)]);
       const trovate = [];
       for (const x of M.rig.values()) {
         if (x.ordineId === p.ordineId) continue;
-        if (codici.has(x.codArt) || (x.vecchiCodici || []).includes(cod)) trovate.push(x);
+        if (codici.has(codiceConfronto(x.codArt)) || (x.vecchiCodici || []).some((v) => codiceConfronto(v) === cod)) trovate.push(x);
       }
       if (!trovate.length) return null;
       const st = [...new Set(trovate.map((x) => stagioneOrdine(M.ord.get(x.ordineId))))].sort((a, b) => stagioneOrd(b) - stagioneOrd(a));
@@ -613,7 +713,8 @@ export const Articolo = {
         return;
       }
       const prima = JSON.parse(snapshot), dopo = copiaPerSalvare();
-      const cambi = Object.keys(dopo).filter((k) => !['modificato', 'nuovo', 'aiCampi', 'aiProva', 'aiOrigine', 'provaCartella'].includes(k) && JSON.stringify(prima[k]) !== JSON.stringify(dopo[k]))
+      const cambi = Object.keys(dopo).filter((k) => !['modificato', 'nuovo', 'aiCampi', 'aiProva', 'aiOrigine', 'provaCartella', 'continuativoAuto', 'continuativoManuale', 'coloreDedotto'].includes(k)
+        && JSON.stringify(prima[k] ?? null) !== JSON.stringify(dopo[k] ?? null))
         .map((k) => descriviCambio(k, prima[k], dopo[k]));
       if (cambi.length) await logga('Modificato articolo', 'articolo', r.id, `${r.codArt} – ${cambi.join('; ')}`, { ordineId: p.ordineId });
     });
@@ -623,8 +724,9 @@ export const Articolo = {
       const base = copiaPerSalvare();
       const nuovo = {
         ordineId: p.ordineId, codArt: variante ? (base.codArt.includes(' ') ? base.codArt.slice(0, base.codArt.lastIndexOf(' ') + 1) : base.codArt + ' ') : '',
-        continuativo: variante ? base.continuativo : false, vecchiCodici: [], macroId: base.macroId, catId: base.catId,
-        coloreId: null, genere: base.genere, prezzo: variante ? base.prezzo : null, sconto: variante ? base.sconto : 0, qta: null,
+        continuativo: false, vecchiCodici: [], macroId: base.macroId, catId: base.catId,
+        coloreId: null, genere: base.genere, prezzo: variante ? base.prezzo : null, prezzoVendita: variante ? base.prezzoVendita : null,
+        scontoComm: variante ? base.scontoComm : 0, scontoFin: variante ? base.scontoFin : 0, qta: null,
         grigliaId: base.grigliaId, taglie: base.taglie ? Object.fromEntries(Object.keys(base.taglie).map((k) => [k, 0])) : null,
         descrizione: variante ? base.descrizione : '', dettagli: variante ? base.dettagli : '', misure: variante ? base.misure : '',
         composizione: variante ? base.composizione : '', note: '', nuovo: true,
@@ -642,6 +744,7 @@ export const Articolo = {
     return {
       mancante: false, r, ord, modificabile, nuovoCod, macro, categorie, colori, generi, griglie, griglia, taglieVista, distribuisci, erroreCodice, duplicato,
       cartellino, storico, sovrapp, linkRicerca, totale, errori, maiuscolo, aggiungiVecchio, nuovoSimile, elimina, M, state, euro, num, stagioneNome, nomeFornitore,
+      scontiArticolo, pvModificabile, coloreDalCodice, precedenti, ultimaPrec, spuntaContinuativo, testoSconti,
       ai, daAI, compilaDaFoto, applicaAI, verificatiAI, conAI, azzeraAIArticolo,
     };
   },
@@ -669,7 +772,9 @@ export const Articolo = {
           <small v-else-if="state.cfg.coloreInCodice" class="aiuto">Codice e tessuto uniti, poi uno spazio e il codice colore</small>
           <small v-if="storico" class="info">Già acquistato in {{ storico.n }} stagion{{ storico.n === 1 ? 'e' : 'i' }} ({{ storico.pezzi }} capi);
             ultima {{ stagioneNome(storico.ultima) }} a {{ euro(storico.prezzo) }}</small></label>
-        <label class="largo check"><input type="checkbox" v-model="r.continuativo" :disabled="!modificabile"> Articolo continuativo</label>
+        <label class="largo check"><input type="checkbox" v-model="r.continuativo" :disabled="!modificabile" @change="spuntaContinuativo"> Articolo continuativo
+          <small v-if="r.continuativoAuto && precedenti.length" class="info">Spuntato in automatico: stesso codice (a meno degli spazi) già acquistato in {{ stagioneNome(ultimaPrec) }}</small>
+          <small v-else-if="modificabile && !r.continuativo && !precedenti.length && storico" class="aiuto">Il codice c'è solo in questa stagione o in quelle successive: non è continuativo</small></label>
         <div v-if="r.continuativo || r.vecchiCodici.length" class="largo vecchi">
           <span class="lbl">Vecchi codici agganciati</span>
           <div class="chips"><span v-for="(c, i) in r.vecchiCodici" :key="c" class="chip mono">{{ c }}
@@ -681,8 +786,8 @@ export const Articolo = {
           <option :value="null" disabled>Seleziona…</option><option v-for="m in macro" :value="m.id">{{ m.nome }}</option></select></label>
         <label>Sottocategoria{{ $ob('catId') }}<i v-if="daAI('catId')" class="tag-ai">AI</i><select class="inp" v-model.number="r.catId" :disabled="!modificabile || !r.macroId">
           <option :value="null" disabled>Seleziona…</option><option v-for="c in categorie" :value="c.id">{{ c.nome }}</option></select></label>
-        <label>Colore{{ $ob('coloreId') }}<i v-if="daAI('coloreId')" class="tag-ai">AI</i><select class="inp" v-model.number="r.coloreId" :disabled="!modificabile">
-          <option :value="null" disabled>Seleziona…</option><option v-for="c in colori" :value="c.id">{{ c.nome }}</option></select>
+        <label>Colore{{ $ob('coloreId') }}<i v-if="daAI('coloreId')" class="tag-ai">AI</i>
+          <colore-picker :model-value="r.coloreId" @update:model-value="(v) => { r.coloreId = v; r.coloreDedotto = false; }" :disabled="!modificabile" :suggerito="coloreDalCodice"/>
           <small v-if="r.coloreDedotto" class="aiuto">dedotto dalla descrizione</small></label>
         <div class="lbl-grp largo">Genere{{ $ob('genere') }}<i v-if="daAI('genere')" class="tag-ai">AI</i><div class="seg">
           <button v-for="(g, k) in generi" :key="k" :class="{on: r.genere === k}" :disabled="!modificabile" @click="r.genere = k">{{ g }}</button></div></div>
@@ -710,9 +815,16 @@ export const Articolo = {
             <button class="btn piccolo" @click="distribuisci(2)">+2 a tutte</button></div>
         </div>
         <label>N. pezzi *<input class="inp" type="number" inputmode="numeric" min="0" v-model.number="r.qta" :disabled="!modificabile || !!griglia"></label>
-        <label>Prezzo €{{ $ob('prezzo') }}<input class="inp" type="number" inputmode="decimal" min="0" step="0.01" v-model.number="r.prezzo" :disabled="!modificabile"></label>
-        <label>Sconto %<input class="inp" type="number" inputmode="decimal" min="0" max="100" v-model.number="r.sconto" :disabled="!modificabile"></label>
-        <div class="totale-riga"><span>Importo</span><b>{{ euro(totale) }}</b></div>
+        <label>Prezzo d'acquisto €{{ $ob('prezzo') }}<input class="inp" type="number" inputmode="decimal" min="0" step="0.01" v-model.number="r.prezzo" :disabled="!modificabile"></label>
+        <label>Prezzo di vendita €<input class="inp" type="number" inputmode="decimal" min="0" step="0.01" v-model.number="r.prezzoVendita" :disabled="!pvModificabile"
+          placeholder="facoltativo"><small v-if="pvModificabile && !modificabile" class="aiuto">Si può inserire anche a ordine trasmesso</small></label>
+        <template v-if="scontiArticolo">
+          <label>Sconto commerciale %<input class="inp" type="number" inputmode="decimal" min="0" max="100" v-model.number="r.scontoComm" :disabled="!modificabile"></label>
+          <label>Sconto finanziario %<input class="inp" type="number" inputmode="decimal" min="0" max="100" v-model.number="r.scontoFin" :disabled="!modificabile">
+            <small class="aiuto">Sul prezzo già scontato del commerciale</small></label>
+        </template>
+        <p v-else-if="testoSconti(r)" class="largo muted">Sconti dell'ordine: {{ testoSconti(r) }} (commerciale + finanziario, a cascata).</p>
+        <div class="totale-riga"><span>Importo netto</span><b>{{ euro(totale) }}</b></div>
       </div>
     </section>
 
@@ -818,7 +930,7 @@ export const Trasmissione = {
       <div class="dest">
         <label v-for="k in DESTINATARI" :key="k" class="dest-c" :style="{'--c': RUOLI[k].colore}">
           <input type="checkbox" v-model="dest[k]"><div><b>{{ RUOLI[k].nome }}</b>
-          <small>{{ RUOLI[k].prezzi ? 'Dati completi: prezzi, sconti, pagamento' : 'Senza prezzi d’acquisto, sconti e pagamento' }}</small></div></label>
+          <small>{{ RUOLI[k].prezzi ? 'Dati completi: prezzi, sconti, pagamento, reso e acconto' : 'Senza prezzi d’acquisto, sconti, pagamento, reso e acconto' }}</small></div></label>
       </div>
     </section>
     <button class="btn primario pieno grande" :disabled="!sel.size || !destinatari.length" @click="invia">
